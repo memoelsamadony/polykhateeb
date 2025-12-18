@@ -1,20 +1,4 @@
 # app.py
-"""
-streamlit run app.py
-
-✅ Fixes your “extraction finished but UI never updates / button never appears” issue by:
-- NEVER touching st.session_state inside background threads
-- NEVER calling st.* (including st.cache_resource) inside background threads
-- Using a per-session Queue (stable across reruns)
-- Using st_autorefresh polling (NO infinite st.rerun loops)
-
-Features:
-- Upload video -> ffmpeg extracts 16k mono WAV in background
-- “Start streaming” -> Faster-Whisper chunk transcription in background
-- Local realtime translation per chunk (MarianMT) with Islamic glossary protection
-- Optional Gemini refinement (throttled) runs ONLY in main thread (quota-friendly)
-"""
-
 import os
 import time
 import uuid
