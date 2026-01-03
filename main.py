@@ -9,6 +9,7 @@ import re
 import requests
 import os
 import uuid
+import json
 import gc
 import datetime
 import difflib
@@ -16,17 +17,49 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 from streamlit.runtime.scriptrunner import add_script_run_ctx
+from typing import List, Optional, Dict, Any
+
+from groq import Groq
+import groq
 
 # ==========================================
 # 1. CONFIGURATION & PROMPTS
 # ==========================================
 
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
-DEFAULT_MT_MODEL = "qwen2.5:3b-instruct"
+DEFAULT_MT_MODEL = "qwen2.5:7b-instruct"
+
+_ENV_PATH = os.path.join(os.getcwd(), ".env")
+if os.path.exists(_ENV_PATH):
+    try:
+        with open(_ENV_PATH, "r", encoding="utf-8") as _env:
+            for _line in _env:
+                _line = _line.strip()
+                if not _line or _line.startswith("#") or "=" not in _line:
+                    continue
+                _k, _v = _line.split("=", 1)
+                _k = _k.strip()
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v.strip()
+    except Exception as e:
+        print(f"[ENV] Could not load .env: {e}")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+GROQ_MODEL_FALLBACK: List[str] = [
+    "llama-3.3-70b-versatile",
+    "qwen/qwen3-32b",
+    "moonshotai/kimi-k2-instruct",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",
+    "groq/compound-mini",
+]
 
 PROMPT_TEMPLATES = {
     "Standard (Fusha/MSA)": {
-        "fixer": """ROLE: Conservative Islamic ASR Restorer.
+    "fixer": """ROLE: Conservative Islamic ASR Restorer.
 TASK: Restore Arabic khutbah text corrupted by speech-to-text phonetic mistakes.
 
 RULES (MUST):
@@ -37,7 +70,7 @@ RULES (MUST):
 4) If unsure, keep the original words unchanged.
 5) No English words, no commentary, no headings.""",
 
-        "translator": """TASK: Translate Arabic to English.
+    "translator": """TASK: Translate Arabic to English.
 STYLE: Formal, clear sermon-like English (not poetic, not archaic).
 
 RULES (MUST):
@@ -45,11 +78,21 @@ RULES (MUST):
 2) Translate ONLY what is present in the Arabic input. Do NOT add missing khutbah phrases/verses.
 3) If a phrase is garbled/unclear, write [unclear] rather than guessing.
 4) Keep Islamic terms consistent (Allah, Qur'an, Salah, Zakah, Jihad, Taqwa, etc.).
-5) If the input is not Arabic (e.g., German/English), output exactly: [non-arabic]."""
+5) If the input is not Arabic (e.g., German/English), output exactly: [non-arabic].""",
+
+    "translator_de": """TASK: Translate Arabic to German.
+STYLE: Formal, clear sermon-like German (not poetic or archaic).
+
+RULES (MUST):
+1) Output ONLY the translation text (no intro, no notes).
+2) Translate ONLY what is present in the Arabic input. Do NOT add missing khutbah phrases/verses.
+3) If a phrase is garbled/unclear, write [unklar] rather than guessing.
+4) Keep Islamic terms consistent (Allah, Quran, Salah, Zakah, Jihad, Taqwa, etc.).
+5) If the input is not Arabic (e.g., English/German), output exactly: [non-arabic]."""
     },
 
     "Egyptian (Masri)": {
-        "fixer": """ROLE: Conservative ASR Restorer (Egyptian Arabic).
+    "fixer": """ROLE: Conservative ASR Restorer (Egyptian Arabic).
 TASK: Clean Egyptian Arabic khutbah/speech transcription produced by ASR.
 
 RULES (MUST):
@@ -60,7 +103,7 @@ RULES (MUST):
 5) LOANWORDS: If you see Arabized English (e.g., "كاميكلز"), keep it as-is (do NOT replace with a random Arabic word).
 6) Never insert English words, no commentary, no headings.""",
 
-        "translator": """TASK: Translate Egyptian Arabic to English.
+    "translator": """TASK: Translate Egyptian Arabic to English.
 STYLE: Natural, conversational English (clear, not slangy unless the Arabic is slangy).
 
 RULES (MUST):
@@ -68,11 +111,21 @@ RULES (MUST):
 2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
 3) If a phrase is garbled/unclear, write [unclear] rather than guessing.
 4) LOANWORDS: If you detect Arabized English, translate it to the intended English term when confident; otherwise keep it as a transliteration in brackets.
+5) If the input is not Arabic, output exactly: [non-arabic].""",
+
+    "translator_de": """TASK: Translate Egyptian Arabic to German.
+STYLE: Natural, conversational German (clear, not slangy unless the Arabic is slangy).
+
+RULES (MUST):
+1) Output ONLY the translation (no intro, no notes).
+2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
+3) If a phrase is garbled/unclear, write [unklar] rather than guessing.
+4) LOANWORDS: If you detect Arabized English, translate it to the intended English term when confident; otherwise keep it as a transliteration in brackets.
 5) If the input is not Arabic, output exactly: [non-arabic]."""
     },
 
     "Gulf (Khaleeji)": {
-        "fixer": """ROLE: Conservative ASR Restorer (Gulf Arabic).
+    "fixer": """ROLE: Conservative ASR Restorer (Gulf Arabic).
 TASK: Clean Khaleeji Arabic transcription produced by ASR.
 
 RULES (MUST):
@@ -84,7 +137,7 @@ RULES (MUST):
 6) LOANWORDS: Handle English product/system terms correctly if present; do NOT replace with random Arabic.
 7) Never insert English words, no commentary, no headings.""",
 
-        "translator": """TASK: Translate Gulf Arabic to English.
+    "translator": """TASK: Translate Gulf Arabic to English.
 STYLE: Respectful, natural English.
 
 RULES (MUST):
@@ -92,9 +145,20 @@ RULES (MUST):
 2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
 3) If a phrase is garbled/unclear, write [unclear] rather than guessing.
 4) Keep Islamic terms consistent (Allah, Qur'an, Salah, etc.).
+5) If the input is not Arabic, output exactly: [non-arabic].""",
+
+    "translator_de": """TASK: Translate Gulf Arabic to German.
+STYLE: Respectful, natural German.
+
+RULES (MUST):
+1) Output ONLY the translation (no intro, no notes).
+2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
+3) If a phrase is garbled/unclear, write [unklar] rather than guessing.
+4) Keep Islamic terms consistent (Allah, Quran, Salah, etc.).
 5) If the input is not Arabic, output exactly: [non-arabic]."""
     }
 }
+
 
 
 GLOSSARY = {
@@ -123,6 +187,13 @@ def get_log_path(filename):
     if not os.path.exists(base_dir):
         os.makedirs(base_dir, exist_ok=True)
     return os.path.join(base_dir, filename)
+
+
+def sanitize_filename(name: str) -> str:
+    """Make a safe ascii-ish filename segment from a model or label."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", name or "")
+    cleaned = cleaned.strip("._")
+    return cleaned or "unnamed"
 
 def append_to_file(filepath, text):
     if not text: return
@@ -224,6 +295,236 @@ def restore_terms(text, mapping):
         out = out.replace(key, val)
     return out
 
+
+def _extract_retry_after_seconds(err: Exception) -> Optional[float]:
+    try:
+        resp = getattr(err, "response", None)
+        if resp is not None:
+            headers = getattr(resp, "headers", None) or {}
+            ra = headers.get("retry-after") or headers.get("Retry-After")
+            if ra is not None:
+                return float(ra)
+    except Exception:
+        pass
+    return None
+
+
+def groq_chat_with_fallback(
+    client: Groq,
+    messages: List[Dict[str, str]],
+    models: List[str],
+    *,
+    temperature: float = 0.3,
+    top_p: float = 1.0,
+    max_tokens: int = 900,
+    per_model_cooldown_sec: float = 10.0,
+    hard_timeout_sec: float = 60.0,
+) -> Optional[Dict[str, Any]]:
+    cooldown_until: Dict[str, float] = {m: 0.0 for m in models}
+    start = time.time()
+    last_err: Optional[Exception] = None
+
+    while (time.time() - start) < hard_timeout_sec:
+        now = time.time()
+        usable = [m for m in models if cooldown_until.get(m, 0.0) <= now]
+
+        if not usable:
+            soonest = min(cooldown_until.values())
+            sleep_s = max(0.25, soonest - now)
+            time.sleep(min(2.0, sleep_s))
+            continue
+
+        for model in usable:
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    stream=False,
+                )
+                return {"model": model, "text": resp.choices[0].message.content}
+
+            except Exception as e:
+                last_err = e
+                is_rate_limit = False
+
+                if hasattr(groq, "RateLimitError") and isinstance(e, groq.RateLimitError):
+                    is_rate_limit = True
+
+                if hasattr(groq, "APIStatusError") and isinstance(e, groq.APIStatusError):
+                    status = getattr(e, "status_code", None) or getattr(e, "status", None)
+                    if status == 429:
+                        is_rate_limit = True
+
+                if is_rate_limit:
+                    ra = _extract_retry_after_seconds(e)
+                    cooldown = ra if (ra is not None and ra > 0) else per_model_cooldown_sec
+                    cooldown_until[model] = time.time() + cooldown
+                    continue
+
+                raise
+
+    print(f"[CLOUD] Fallback timed out. Last error: {last_err}")
+    return None
+
+
+def cloud_polish_worker(
+    cloud_in_q: "queue.Queue",
+    cloud_out_q: "queue.Queue",
+    *,
+    target_langs: Optional[List[str]] = None,
+    flush_every: int = 8,
+    session_uid: str = "",
+):
+    if not groq_client:
+        log("[CLOUD] GROQ_API_KEY not set => cloud disabled.")
+        # Drain queue so it doesn't grow forever
+        while True:
+            x = cloud_in_q.get()
+            if x == "STOP":
+                return
+
+    buf = []
+    start_id = None
+    end_id = None
+    last_flush = time.time()
+
+    def make_system_prompt() -> str:
+        return (
+            "ROLE: Conservative Arabic ASR fixer and translator for khutbah/speech.\n"
+            "TASK: Given raw Arabic ASR text (may contain multiple chunks separated by blank lines), do: \n"
+            "1) Minimal Arabic fix (no paraphrase, no adding/removing sentences). Arabic only.\n"
+            "2) Translate to English (en) and German (de).\n"
+            "OUTPUT: Strict JSON with keys fixed_ar, en, de. Example:\n"
+            "{\"fixed_ar\": \"...\", \"en\": \"...\", \"de\": \"...\"}\n"
+            "RULES:\n"
+            "- fixed_ar must stay in Arabic and keep structure; fix only obvious ASR mistakes.\n"
+            "- en/de must translate only what is present; if unclear, use [unclear] / [unklar].\n"
+            "- If input is not Arabic, set fixed_ar='[non-arabic]' and en/de='[non-arabic]'.\n"
+            "- No extra text, no code fences, JSON only."
+        )
+
+    while True:
+        try:
+            item = cloud_in_q.get(timeout=0.5)
+        except queue.Empty:
+            item = None
+
+        if item == "STOP":
+            break
+
+        time_due = (time.time() - last_flush) > 8.0
+
+        if item:
+            ar = (item.get("ar") or "").strip()
+            rg = item.get("range")
+
+            if ar:
+                if rg and isinstance(rg, (tuple, list)) and len(rg) == 2:
+                    if start_id is None:
+                        start_id = int(rg[0])
+                    end_id = int(rg[1])
+                else:
+                    if start_id is None:
+                        start_id = int(item.get("id", 0))
+                    end_id = int(item.get("id", 0))
+
+                buf.append(ar)
+
+            should_flush = (len(buf) >= flush_every) or bool(item.get("final", False)) or time_due
+        else:
+            should_flush = time_due
+
+        if not should_flush or not buf:
+            continue
+
+        end_id = int(end_id) if end_id is not None else (start_id + len(buf) - 1 if start_id is not None else 0)
+        batch = "\n\n".join(buf)
+
+        if groq_client:
+            log(f"[CLOUD] Flushing {start_id}-{end_id} ({len(buf)} parts) -> langs=['en','de'] with Arabic fix")
+            messages = [
+                {"role": "system", "content": make_system_prompt()},
+                {"role": "user", "content": batch},
+            ]
+
+            result = groq_chat_with_fallback(
+                groq_client,
+                messages,
+                GROQ_MODEL_FALLBACK,
+                temperature=0.2,
+                top_p=1.0,
+                max_tokens=1500,
+                per_model_cooldown_sec=10.0,
+                hard_timeout_sec=60.0,
+            )
+
+            if result and result.get("text"):
+                raw_resp = result["text"].strip()
+
+                def _extract_json(txt: str) -> Dict[str, str]:
+                    try:
+                        t = txt.strip()
+                        if t.startswith("```"):
+                            t = re.sub(r"^```(json)?", "", t, flags=re.IGNORECASE).strip()
+                            t = t.rstrip("`").rstrip()
+                        return json.loads(t)
+                    except Exception:
+                        return {}
+
+                parsed = _extract_json(raw_resp)
+                fixed_ar = str(parsed.get("fixed_ar", "")).strip() if parsed else ""
+                en_text = str(parsed.get("en", "")).strip() if parsed else ""
+                de_text = str(parsed.get("de", "")).strip() if parsed else ""
+
+                safe_model = sanitize_filename(result.get("model", "cloud"))
+
+                if fixed_ar:
+                    log_name_ar = f"log_{session_uid}_cloud_{safe_model}_ar.txt" if session_uid else f"log_cloud_{safe_model}_ar.txt"
+                    append_to_file(
+                        get_log_path(log_name_ar),
+                        f"[{get_current_ts_string()}] [{start_id}-{end_id}] (ar-fixed, {result['model']})\n{fixed_ar}\n"
+                    )
+                    cloud_out_q.put({
+                        "range": (start_id, end_id),
+                        "model": result["model"],
+                        "text": fixed_ar,
+                        "lang": "ar-fixed",
+                    })
+
+                if en_text:
+                    log_name_en = f"log_{session_uid}_cloud_{safe_model}_en.txt" if session_uid else f"log_cloud_{safe_model}_en.txt"
+                    append_to_file(
+                        get_log_path(log_name_en),
+                        f"[{get_current_ts_string()}] [{start_id}-{end_id}] (en, {result['model']})\n{en_text}\n"
+                    )
+                    cloud_out_q.put({
+                        "range": (start_id, end_id),
+                        "model": result["model"],
+                        "text": en_text,
+                        "lang": "en",
+                    })
+
+                if de_text:
+                    log_name_de = f"log_{session_uid}_cloud_{safe_model}_de.txt" if session_uid else f"log_cloud_{safe_model}_de.txt"
+                    append_to_file(
+                        get_log_path(log_name_de),
+                        f"[{get_current_ts_string()}] [{start_id}-{end_id}] (de, {result['model']})\n{de_text}\n"
+                    )
+                    cloud_out_q.put({
+                        "range": (start_id, end_id),
+                        "model": result["model"],
+                        "text": de_text,
+                        "lang": "de",
+                    })
+
+        buf = []
+        start_id = None
+        end_id = None
+        last_flush = time.time()
+
 # ==========================================
 # 3. WORKERS
 # ==========================================
@@ -247,12 +548,13 @@ def load_whisper_model(model_size, device, compute_type):
         return None
 
 # --- WORKER 1: REFINEMENT ---
-def refinement_worker(input_q, output_q, config=None):
+def refinement_worker(input_q, output_q, cloud_q=None, config=None):
     log("Refinement Worker: STARTING")
 
     # Default prompts (will be overridden per-job if 'prompts' passed)
     current_fixer_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"]["fixer"]
-    current_translator_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"]["translator"]
+    current_translator_en_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"]["translator"]
+    current_translator_de_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"].get("translator_de", "")
 
     # Conservative guard thresholds (tune if needed)
     SIMILARITY_MIN = 0.88          # reject fixer output if it rewrites too much
@@ -285,12 +587,15 @@ def refinement_worker(input_q, output_q, config=None):
             if job is None:
                 continue
             if job == "STOP":
+                if cloud_q is not None:
+                    cloud_q.put({"id": 0, "ar": "", "final": True})
                 break
 
             raw_ar = (job.get("source_ar") or "").strip()
             batch_id = job.get("id", 0)
             log_file_ar = job.get("log_file_ar", None)
             log_file_en = job.get("log_file_en", None)
+            log_file_de = job.get("log_file_de", None)
             t_submitted = job.get("ts", time.time())
 
             if not raw_ar:
@@ -299,17 +604,27 @@ def refinement_worker(input_q, output_q, config=None):
             # Allow per-job style prompt overrides
             if "prompts" in job and job["prompts"]:
                 current_fixer_prompt = job["prompts"].get("fixer", current_fixer_prompt)
-                current_translator_prompt = job["prompts"].get("translator", current_translator_prompt)
+                current_translator_en_prompt = job["prompts"].get("translator", current_translator_en_prompt)
+                current_translator_de_prompt = job["prompts"].get("translator_de", current_translator_de_prompt)
 
             # If the speaker switched language (not Arabic), skip "fixing" and translate as [non-arabic]
             if arabic_ratio(raw_ar) < 0.50:
                 corrected_ar = raw_ar
                 final_en = "[non-arabic]"
+                final_de = "[non-arabic]"
+                if cloud_q is not None:
+                    cloud_q.put({
+                        "range": job.get("range", (batch_id, batch_id)),
+                        "id": batch_id,
+                        "ar": raw_ar,
+                        "final": bool(job.get("final", False)),
+                    })
                 output_q.put({
                     "type": "refined_batch",
                     "id": batch_id,
                     "ar_fixed": corrected_ar,
-                    "en_final": final_en
+                    "en_final": final_en,
+                    "de_final": final_de
                 })
                 continue
 
@@ -318,7 +633,6 @@ def refinement_worker(input_q, output_q, config=None):
             # -------------------------
             # 1) Conservative Restorer
             # -------------------------
-            # IMPORTANT: keep this deterministic and conservative.
             fixer_sys = (
                 current_fixer_prompt.strip()
                 + "\n\nCRITICAL RULES (must follow):\n"
@@ -344,7 +658,6 @@ def refinement_worker(input_q, output_q, config=None):
             }, timeout=50)
 
             corrected_ar = sanitize_fixed_ar(raw_ar, fixed_candidate)
-
             lat_fix = time.time() - t_submitted
             if log_file_ar:
                 append_to_file(
@@ -352,25 +665,41 @@ def refinement_worker(input_q, output_q, config=None):
                     f"[{get_current_ts_string()}] [Batch {batch_id}] (Lat: {lat_fix:.2f}s)\n{corrected_ar}\n"
                 )
 
+            if cloud_q is not None:
+                cloud_q.put({
+                    "range": job.get("range", (batch_id, batch_id)),
+                    "id": batch_id,
+                    "ar": raw_ar,
+                    "final": bool(job.get("final", False)),
+                })
+
             # -------------------------
-            # 2) Refined Translation
+            # 2) Refined Translation (EN/DE)
             # -------------------------
-            # Make translation literal + glossary-bound; forbid additions.
-            translator_sys = (
-                current_translator_prompt.strip()
+            translator_sys_en = (
+                current_translator_en_prompt.strip()
                 + "\n\n"
                 + glossary_block()
                 + "\n\nCRITICAL RULES (must follow):\n"
-                  "- Translate ONLY what is present in the Arabic input.\n"
-                  "- Do NOT add khutbah phrases, Qur’anic verses, or explanations that are not in the text.\n"
+                  "- Translate ONLY what is present in the Arabic input. Do NOT add khutbah phrases, Qur’anic verses, or explanations that are not in the text.\n"
                   "- If a phrase is garbled/unclear, write [unclear] rather than guessing.\n"
+                  "- Output ONLY the translation.\n"
+            )
+
+            translator_sys_de = (
+                current_translator_de_prompt.strip()
+                + "\n\n"
+                + glossary_block()
+                + "\n\nCRITICAL RULES (must follow):\n"
+                  "- Translate ONLY what is present in the Arabic input. Do NOT add khutbah phrases, Qur’anic verses, or explanations that are not in the text.\n"
+                  "- If a phrase is garbled/unclear, write [unklar] rather than guessing.\n"
                   "- Output ONLY the translation.\n"
             )
 
             final_en = robust_ollama_call({
                 "model": DEFAULT_MT_MODEL,
                 "messages": [
-                    {"role": "system", "content": translator_sys},
+                    {"role": "system", "content": translator_sys_en},
                     {"role": "user", "content": corrected_ar}
                 ],
                 "stream": False,
@@ -381,9 +710,24 @@ def refinement_worker(input_q, output_q, config=None):
                 }
             }, timeout=50)
 
-            # Fallback if translation fails
+            final_de = robust_ollama_call({
+                "model": DEFAULT_MT_MODEL,
+                "messages": [
+                    {"role": "system", "content": translator_sys_de},
+                    {"role": "user", "content": corrected_ar}
+                ],
+                "stream": False,
+                "options": {
+                    "temperature": 0.0,
+                    "top_p": 0.2,
+                    "num_ctx": 1800
+                }
+            }, timeout=50)
+
             if not final_en:
                 final_en = "[unclear]"
+            if not final_de:
+                final_de = "[unklar]"
 
             lat_total = time.time() - t_submitted
 
@@ -391,13 +735,19 @@ def refinement_worker(input_q, output_q, config=None):
                 "type": "refined_batch",
                 "id": batch_id,
                 "ar_fixed": corrected_ar,
-                "en_final": final_en
+                "en_final": final_en,
+                "de_final": final_de
             })
 
             if log_file_en:
                 append_to_file(
                     log_file_en,
-                    f"[{get_current_ts_string()}] [Batch {batch_id}] (Total Lat: {lat_total:.2f}s)\n{final_en}\n"
+                    f"[{get_current_ts_string()}] [Batch {batch_id}] (Model: {DEFAULT_MT_MODEL} | Total Lat: {lat_total:.2f}s)\n{final_en}\n"
+                )
+            if log_file_de:
+                append_to_file(
+                    log_file_de,
+                    f"[{get_current_ts_string()}] [Batch {batch_id}] (Model: {DEFAULT_MT_MODEL} | Total Lat: {lat_total:.2f}s)\n{final_de}\n"
                 )
 
             log(f"Batch {batch_id} Done (Total Lat: {lat_total:.2f}s).")
@@ -409,68 +759,8 @@ def refinement_worker(input_q, output_q, config=None):
             time.sleep(1)
 
 
-# --- WORKER 2: INSTANT TRANSLATION ---
-def instant_translation_worker(transcription_q, event_q, config):
-    log("Instant Translator: STARTING")
-    base_translator_prompt = config['prompts']['translator']
-    log_draft_en = config['logs']['draft_en']
-
-    # Strong anti-hallucination translation rules + glossary (no placeholders!)
-    sys_prompt = (
-        base_translator_prompt.strip()
-        + "\n\n"
-        + glossary_block()
-        + "\n\nCRITICAL RULES (must follow):\n"
-          "- Translate ONLY what is present in the Arabic input. Do NOT add missing khutbah phrases.\n"
-          "- If a phrase is garbled/unclear, write [unclear] for that part rather than guessing.\n"
-          "- If the input is not Arabic (e.g., German/English), output exactly: [non-arabic]\n"
-          "- Keep proper Islamic terms according to the glossary.\n"
-          "- Output ONLY the translation text.\n"
-    )
-
-    while True:
-        try:
-            item = transcription_q.get(timeout=1)
-            if item is None:
-                break
-
-            chunk_id = item['id']
-            ar_text = (item.get('text') or "").strip()
-            t_emit = item.get('ts', time.time())
-
-            # If it’s not Arabic (speaker switched language), skip LLM call.
-            if arabic_ratio(ar_text) < 0.50:
-                final_tr = "[non-arabic]"
-            else:
-                raw_tr = robust_ollama_call({
-                    "model": config['mt_model'],
-                    "messages": [
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": ar_text}
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.0,   # deterministic -> less “sermon creativity”
-                        "top_p": 0.2,
-                        "num_ctx": 1024
-                    }
-                }, timeout=45) or "[unclear]"
-
-                final_tr = raw_tr.strip()
-
-            latency = time.time() - t_emit
-            append_to_file(log_draft_en, f"[{get_current_ts_string()}] [{chunk_id}] (Lat: {latency:.2f}s) {final_tr}")
-
-            event_q.put(("update", {"id": chunk_id, "ar": ar_text, "tr": final_tr}))
-
-        except queue.Empty:
-            continue
-        except Exception as e:
-            log(f"Translator Error: {e}")
-
-
-# --- WORKER 3: AUDIO & WHISPER (Combined Fixes) ---
-def transcription_stream_thread(source, config, trans_q, stop_event, refine_input_q, event_q):
+# --- WORKER 2: AUDIO & WHISPER (Combined Fixes) ---
+def transcription_stream_thread(source, config, stop_event, refine_input_q, event_q):
     """
     SimulStreaming-core replication (practical version for faster-whisper):
       - VAC/VAD iterator: discard non-voice, accumulate voiced chunks, mark end-of-voice as final.
@@ -482,7 +772,7 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
     import wave
     import re
     import datetime
-    from collections import deque
+    from collections import deque, Counter
     import numpy as np
 
     # -----------------------------
@@ -574,6 +864,7 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
     try:
         import webrtcvad
         _VAD_OK = True
+        print("webrtcvad imported successfully.")
     except Exception:
         _VAD_OK = False
 
@@ -616,6 +907,13 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
 
             if frame_f32 is None or len(frame_f32) == 0:
                 return out
+
+            # ensure exact frame size for webrtcvad
+            if len(frame_f32) != self.frame_samples:
+                if len(frame_f32) < self.frame_samples:
+                    frame_f32 = np.pad(frame_f32, (0, self.frame_samples - len(frame_f32)))
+                else:
+                    frame_f32 = frame_f32[:self.frame_samples]
 
             # Keep rolling padding buffer
             self.pad_buf.append(frame_f32)
@@ -701,7 +999,7 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
     if is_live_mic:
         try:
             # read in VAD frame sizes to align with VAC
-            frame_sec = 0.04
+            frame_sec = 0.02
             stream = sd.InputStream(device=source, channels=1, samplerate=sr, dtype="float32",
                                     blocksize=int(sr * frame_sec))
             stream.start()
@@ -727,13 +1025,13 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
     )
 
     # VAC parameters (matching paper defaults closely) :contentReference[oaicite:9]{index=9}
-    VAD_FRAME_SEC = 0.04
+    VAD_FRAME_SEC = 0.02
     MIN_NONVOICE_MS = 500
     VOICE_PAD_MS = 100
     MIN_VOICED_ACCUM_SEC = float(config.get("min_voiced_accum_sec", 1.0))
 
     # Sliding audio buffer (like SimulStreaming buffer length) :contentReference[oaicite:10]{index=10}
-    MAX_WINDOW_SEC = float(config.get("max_window_sec", 30.0))
+    MAX_WINDOW_SEC = float(config.get("max_window_sec", 15.0))
     AUDIO_MIN_SEC = float(config.get("audio_min_sec", 1.0))
 
     audio_buf = RollingAudioBuffer(sr=sr, max_sec=MAX_WINDOW_SEC)
@@ -755,6 +1053,50 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
     chunk_counter = 0
     accumulated_text = ""
     last_send_time = time.time()
+
+    # --- batching for refinement ---
+    refine_every = int(config.get("refine_every", 3))
+    batch_buf = []
+    batch_start_id = None
+    batch_end_id = None
+    last_batch_flush = time.time()
+
+    def flush_refine_batch(force_final: bool = False):
+        nonlocal batch_buf, batch_start_id, batch_end_id, last_batch_flush
+        if not batch_buf:
+            return
+        batch_text = "\n\n".join(batch_buf).strip()
+        if not batch_text:
+            batch_buf = []
+            batch_start_id = None
+            batch_end_id = None
+            return
+
+        job = {
+            "id": batch_end_id or batch_start_id or 0,     # keep an id for UI ordering
+            "range": (batch_start_id or 0, batch_end_id or batch_start_id or 0),
+            "source_ar": batch_text,
+            "ts": time.time(),
+            "log_file_ar": config["logs"].get("fixed_ar"),
+            "log_file_en": config["logs"].get("final_en"),
+            "log_file_de": config["logs"].get("final_de"),
+            "prompts": config.get("prompts"),
+            "final": bool(force_final),
+        }
+        refine_input_q.put(job)
+
+        # reset batch
+        batch_buf = []
+        batch_start_id = None
+        batch_end_id = None
+        last_batch_flush = time.time()
+
+    def too_repetitive(ws):
+        if len(ws) < 12:
+            return False
+        c = Counter(ws)
+        top = c.most_common(1)[0][1]
+        return top / len(ws) > 0.35
 
     # -----------------------------
     # 6) Main loop
@@ -799,15 +1141,15 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
             # ---- decode
             t_infer_start = time.time()
             transcribe_kwargs = dict(
-                beam_size=int(config.get("beam_size", 5)),
+                beam_size=int(config.get("beam_size", 1)),
                 language=config.get("language", "ar"),
                 condition_on_previous_text=False,
                 word_timestamps=False,   # not needed anymore (we avoid timestamp barrier)
-                no_speech_threshold=float(config.get("no_speech_threshold", 0.6)),
-                log_prob_threshold=float(config.get("log_prob_threshold", -1.0)),
-                compression_ratio_threshold=float(config.get("compression_ratio_threshold", 2.1)),
-                temperature=[0.0, 0.2, 0.4],
-                repetition_penalty=float(config.get("repetition_penalty", 1.0)),
+                no_speech_threshold=0.5,
+                log_prob_threshold=-1.0,
+                compression_ratio_threshold=2.1,
+                temperature=0.0,
+                repetition_penalty=1.05,
             )
 
             try:
@@ -823,11 +1165,13 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
 
             # Build full hypothesis text
             hyp_text = norm_text("".join([getattr(s, "text", "") for s in segments]))
-            if hallucinations_re.search(hyp_text):
-                # If the *whole* hypothesis looks polluted, don't advance agreement.
-                # (VAC should already reduce this a lot.)
-                print(f"[{get_ts()}] REJECTED HALLUCINATION(HYP): {hyp_text}")
-                continue
+            m = hallucinations_re.search(hyp_text)
+            if m:
+                trigger = m.group(0)
+                hyp_text = hyp_text[:m.start()].strip()
+                print(f"[{get_ts()}] CUT HALLUCINATION TAIL on trigger: {trigger}")
+                if not hyp_text:
+                    continue
 
             hyp_words = split_words(hyp_text)
 
@@ -839,6 +1183,14 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
 
             # Also remove hallucination tokens at word level BEFORE agreement
             hyp_words_safe = [w for w in hyp_words_safe if not hallucinations_re.search(w)]
+
+            # Repetition loop guard (prevents long repeated garbage like "تستطيع تستطيع ...")
+            if too_repetitive(hyp_words_safe):
+                audio_buf.clear()
+                prev_hyp_words = []
+                committed_words = []
+                accumulated_text = ""
+                continue
 
             # ---- LocalAgreement: commit only LCP between previous and current hypotheses :contentReference[oaicite:13]{index=13}
             stable = lcp_words(prev_hyp_words, hyp_words_safe) if prev_hyp_words else []
@@ -876,7 +1228,19 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
                 print(log_msg)
                 log_to_file(log_msg)
 
-                trans_q.put({"id": chunk_counter, "text": clean, "ts": time.time()})
+                # Always update RAW UI per chunk
+                event_q.put(("update", {"id": chunk_counter, "ar": clean}))
+
+                # Collect for refinement batching
+                if batch_start_id is None:
+                    batch_start_id = chunk_counter
+                batch_end_id = chunk_counter
+                batch_buf.append(clean)
+
+                # Flush conditions: reached batch size OR end-of-voice OR time-based
+                if len(batch_buf) >= refine_every or is_final:
+                    flush_refine_batch(force_final=is_final)
+
                 accumulated_text = ""
                 last_send_time = time.time()
 
@@ -885,6 +1249,9 @@ def transcription_stream_thread(source, config, trans_q, stop_event, refine_inpu
                 audio_buf.clear()
                 prev_hyp_words = []
                 committed_words = []
+
+    # Flush remaining batch when stream ends
+    flush_refine_batch(force_final=True)
 
     event_q.put(("status", "stream_finished"))
     if wf:
@@ -913,20 +1280,35 @@ def main():
         st.session_state.chunks = [] 
         st.session_state.refined_blocks_ar = [] 
         st.session_state.refined_blocks_en = [] 
+        st.session_state.refined_blocks_de = [] 
+        st.session_state.cloud_blocks = []
         st.session_state.streaming = False
         st.session_state.extraction_done = False
         st.session_state.stop_event = threading.Event()
+        st.session_state.last_chunk_id = 0
         
         st.session_state.refine_in = queue.Queue()
         st.session_state.refine_out = queue.Queue()
-        st.session_state.trans_in = queue.Queue()
         st.session_state.event_q = queue.Queue()
+        st.session_state.cloud_in = queue.Queue()
+        st.session_state.cloud_out = queue.Queue()
 
     if "refinement_thread_started" not in st.session_state:
-        t_ref = threading.Thread(target=refinement_worker, args=(st.session_state.refine_in, st.session_state.refine_out), daemon=True)
+        t_ref = threading.Thread(target=refinement_worker, args=(st.session_state.refine_in, st.session_state.refine_out, st.session_state.cloud_in), daemon=True)
         add_script_run_ctx(t_ref)
         t_ref.start()
         st.session_state.refinement_thread_started = True
+
+    if "cloud_thread_started" not in st.session_state:
+        t_cloud = threading.Thread(
+            target=cloud_polish_worker,
+            args=(st.session_state.cloud_in, st.session_state.cloud_out),
+            kwargs={"target_langs": ["en", "de"], "flush_every": 8, "session_uid": st.session_state.uid},
+            daemon=True,
+        )
+        add_script_run_ctx(t_cloud)
+        t_cloud.start()
+        st.session_state.cloud_thread_started = True
 
     with st.sidebar:
         st.header("⚙️ Settings")
@@ -978,16 +1360,18 @@ def main():
     elif mic_index is not None:
         source_to_pass = mic_index
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1: st.subheader("1. Raw Arabic")
     with c2: st.subheader("2. Refined Arabic")
-    with c3: st.subheader("3. Instant English")
-    with c4: st.subheader("4. Refined English")
+    with c3: st.subheader("3. Refined English")
+    with c4: st.subheader("4. Refined German")
+    with c5: st.subheader("5. Cloud Translation (EN/DE)")
     
     box_raw = c1.empty()
     box_fixed = c2.empty()
-    box_draft = c3.empty()
-    box_final = c4.empty()
+    box_final_en = c3.empty()
+    box_final_de = c4.empty()
+    box_cloud = c5.empty()
 
     if source_to_pass is not None:
         if not st.session_state.streaming:
@@ -995,26 +1379,24 @@ def main():
                 st.session_state.streaming = True
                 st.session_state.stop_event.clear()
                 
+                mt_model_safe = sanitize_filename(DEFAULT_MT_MODEL)
                 config = {
                     "model_size": model_size, 
                     "device": device, 
                     "compute_type": compute_type, 
-                    "mt_model": DEFAULT_MT_MODEL, 
                     "refine_every": refine_every, 
+                    "max_window_sec": 25.0,
+                    "beam_size": 2,
                     "prompts": PROMPT_TEMPLATES[selected_style],
                     "logs": {
                         "raw_ar": get_log_path(f"log_{st.session_state.uid}_1_raw_ar.txt"),
-                        "draft_en": get_log_path(f"log_{st.session_state.uid}_2_draft_en.txt"),
-                        "fixed_ar": get_log_path(f"log_{st.session_state.uid}_3_fixed_ar.txt"),
-                        "final_en": get_log_path(f"log_{st.session_state.uid}_4_final_en.txt")
+                        "fixed_ar": get_log_path(f"log_{st.session_state.uid}_2_fixed_ar.txt"),
+                        "final_en": get_log_path(f"log_{st.session_state.uid}_{mt_model_safe}_en.txt"),
+                        "final_de": get_log_path(f"log_{st.session_state.uid}_{mt_model_safe}_de.txt")
                     }
                 }
-                
-                t1 = threading.Thread(target=instant_translation_worker, args=(st.session_state.trans_in, st.session_state.event_q, config), daemon=True)
-                add_script_run_ctx(t1)
-                t1.start()
 
-                t2 = threading.Thread(target=transcription_stream_thread, args=(source_to_pass, config, st.session_state.trans_in, st.session_state.stop_event, st.session_state.refine_in, st.session_state.event_q), daemon=True)
+                t2 = threading.Thread(target=transcription_stream_thread, args=(source_to_pass, config, st.session_state.stop_event, st.session_state.refine_in, st.session_state.event_q), daemon=True)
                 add_script_run_ctx(t2)
                 t2.start()
                 st.rerun()
@@ -1026,9 +1408,10 @@ def main():
 
     if not st.session_state.streaming:
         box_raw.text_area("Raw", value="\n\n".join([c['ar'] for c in st.session_state.chunks]), height=600, key="static_raw")
-        box_fixed.text_area("Fixed", value="\n\n".join(st.session_state.refined_blocks_ar), height=600, key="static_fixed")
-        box_draft.text_area("Draft", value="\n\n".join([c['tr'] for c in st.session_state.chunks]), height=600, key="static_draft")
-        box_final.text_area("Final", value="\n\n".join(st.session_state.refined_blocks_en), height=600, key="static_final")
+        box_fixed.text_area("Refined Arabic", value="\n\n".join(st.session_state.refined_blocks_ar), height=600, key="static_fixed")
+        box_final_en.text_area("Refined English", value="\n\n".join(st.session_state.refined_blocks_en), height=600, key="static_final_en")
+        box_final_de.text_area("Refined German", value="\n\n".join(st.session_state.refined_blocks_de), height=600, key="static_final_de")
+        box_cloud.text_area("Cloud Translation", value="\n\n".join(st.session_state.cloud_blocks), height=600, key="static_cloud")
 
     if st.session_state.streaming:
         while not st.session_state.stop_event.is_set():
@@ -1036,10 +1419,19 @@ def main():
             try:
                 while True:
                     t, p = st.session_state.event_q.get_nowait()
-                    if t == "update": st.session_state.chunks.append(p); has_data = True
-                    elif t == "error": st.error(f"Error: {p}"); st.session_state.stop_event.set(); break
-                    elif t == "status" and p == "stream_finished": st.session_state.stop_event.set(); break
-            except queue.Empty: pass
+                    if t == "update":
+                        st.session_state.chunks.append(p)
+                        st.session_state.last_chunk_id = p.get("id", st.session_state.last_chunk_id)
+                        has_data = True
+                    elif t == "error":
+                        st.error(f"Error: {p}")
+                        st.session_state.stop_event.set()
+                        break
+                    elif t == "status" and p == "stream_finished":
+                        st.session_state.stop_event.set()
+                        break
+            except queue.Empty:
+                pass
 
             try:
                 while True:
@@ -1047,17 +1439,34 @@ def main():
                     if p["type"] == "refined_batch":
                         st.session_state.refined_blocks_ar.append(f"[{p['id']}] {p['ar_fixed']}")
                         st.session_state.refined_blocks_en.append(f"[{p['id']}] {p['en_final']}")
+                        st.session_state.refined_blocks_de.append(f"[{p['id']}] {p['de_final']}")
                         has_data = True
             except queue.Empty: pass
+
+            try:
+                while True:
+                    p = st.session_state.cloud_out.get_nowait()
+                    st.session_state.cloud_blocks.append(
+                        f"[{p['range'][0]}–{p['range'][1]}] ({p['lang']}, {p['model']})\n{p['text']}"
+                    )
+                    has_data = True
+            except queue.Empty:
+                pass
             
             if has_data:
                 iter_id = str(uuid.uuid4())[:8] 
                 box_raw.text_area("Raw", value="\n\n".join([c['ar'] for c in st.session_state.chunks]), height=600, key=f"raw_{iter_id}")
-                box_draft.text_area("Draft", value="\n\n".join([c['tr'] for c in st.session_state.chunks]), height=600, key=f"draft_{iter_id}")
-                box_fixed.text_area("Fixed", value="\n\n".join(st.session_state.refined_blocks_ar), height=600, key=f"fixed_{iter_id}")
-                box_final.text_area("Final", value="\n\n".join(st.session_state.refined_blocks_en), height=600, key=f"final_{iter_id}")
+                box_fixed.text_area("Refined Arabic", value="\n\n".join(st.session_state.refined_blocks_ar), height=600, key=f"fixed_{iter_id}")
+                box_final_en.text_area("Refined English", value="\n\n".join(st.session_state.refined_blocks_en), height=600, key=f"final_en_{iter_id}")
+                box_final_de.text_area("Refined German", value="\n\n".join(st.session_state.refined_blocks_de), height=600, key=f"final_de_{iter_id}")
+                box_cloud.text_area("Cloud Translation", value="\n\n".join(st.session_state.cloud_blocks), height=600, key=f"cloud_{iter_id}")
 
             time.sleep(0.2) 
+        if "cloud_in" in st.session_state and st.session_state.cloud_in:
+            try:
+                st.session_state.cloud_in.put({"id": st.session_state.last_chunk_id, "ar": "", "final": True})
+            except Exception:
+                pass
         st.rerun()
 
 if __name__ == "__main__":
