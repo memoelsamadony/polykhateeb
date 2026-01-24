@@ -2,8 +2,8 @@ import os
 from groq import Groq
 
 # Add this to your CONFIG
-GROQ_API_KEY = "YOUR_API_KEY_HERE" # Your Key Here
-groq_client = Groq(api_key=GROQ_API_KEY)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # Load from environment
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 def cloud_final_polish(text_chunk_batch):
     """

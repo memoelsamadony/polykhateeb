@@ -50,7 +50,7 @@ if os.path.exists(_ENV_PATH):
     except Exception as e:
         print(f"[ENV] Could not load .env: {e}")
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_API_KEY_HERE")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
