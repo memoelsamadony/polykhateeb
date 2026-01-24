@@ -21,12 +21,14 @@ from typing import List, Optional, Dict, Any
 
 from groq import Groq
 import groq
+import torch
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 # ==========================================
 # 1. CONFIGURATION & PROMPTS
 # ==========================================
 
-OLLAMA_API_URL = "https://ym13l6kahy4sna-4000.proxy.runpod.net/llm/generate"
+OLLAMA_API_URL = "https://rwlgmin4n5ue97-4000.proxy.runpod.net/llm/generate"
 LLM_API_HEADERS = {
     "x-api-key": "default_api_key_change_me",
     "Content-Type": "application/json",
@@ -48,15 +50,15 @@ if os.path.exists(_ENV_PATH):
     except Exception as e:
         print(f"[ENV] Could not load .env: {e}")
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_API_KEY_HERE")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 GROQ_MODEL_FALLBACK: List[str] = [
-    "qwen/qwen3-32b",
+    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
     "moonshotai/kimi-k2-instruct",
-    "llama-3.3-70b-versatile",
+    "",
     "openai/gpt-oss-20b",
     "llama-3.1-8b-instant",
     "groq/compound-mini",
@@ -263,6 +265,26 @@ def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a or "", b or "").ratio()
 
 
+def gec_correct_ar(text: str, tok, model, max_new_tokens: int = 256) -> str:
+    text = (text or "").strip()
+    if not text:
+        return text
+
+    device = next(model.parameters()).device
+    inputs = tok(text, return_tensors="pt", truncation=True, max_length=1024).to(device)
+
+    with torch.no_grad():
+        out_ids = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_beams=4,
+            do_sample=False,
+            length_penalty=1.0,
+            early_stopping=True,
+        )
+    return tok.decode(out_ids[0], skip_special_tokens=True).strip()
+
+
 def robust_ollama_call(payload, timeout=30, retries=1):
     messages = payload.get("messages", []) if isinstance(payload, dict) else []
     prompt_parts = []
@@ -290,7 +312,7 @@ def robust_ollama_call(payload, timeout=30, retries=1):
     max_tokens = options.get("max_tokens") or payload.get("max_tokens") or 512
     temperature = options.get("temperature")
     if temperature is None:
-        temperature = payload.get("temperature", 0.3)
+        temperature = payload.get("temperature", 0.6)
 
     request_body = {
         "prompt": prompt,
@@ -599,6 +621,17 @@ def load_whisper_model(model_size, device, compute_type):
         log(f"CRITICAL: Whisper Load Failed: {e}")
         return None
 
+
+@st.cache_resource(max_entries=1)
+def load_ar_gec_model(model_id: str = "CAMeL-Lab/arabart-qalb15-gec-ged-13", device: str = "cuda"):
+    tok = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+    if device == "cuda" and torch.cuda.is_available():
+        model = model.to("cuda")
+        model = model.half()
+    model.eval()
+    return tok, model
+
 # --- WORKER 1: REFINEMENT ---
 def refinement_worker(input_q, output_q, cloud_q=None, config=None):
     log("Refinement Worker: STARTING")
@@ -611,6 +644,17 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
     # Conservative guard thresholds (tune if needed)
     SIMILARITY_MIN = 0.88          # reject fixer output if it rewrites too much
     MIN_AR_RATIO = 0.65            # reject if "Arabic-ness" drops too far
+
+    use_local_gec = True
+    gec_tok, gec_model = (None, None)
+
+    if use_local_gec:
+        try:
+            gec_tok, gec_model = load_ar_gec_model(device="cuda")
+            log("[GEC] Loaded local Arabic GEC model.")
+        except Exception as e:
+            log(f"[GEC] Failed to load, will fallback to Ollama fixer: {e}")
+            use_local_gec = False
 
     def sanitize_fixed_ar(raw_ar: str, fixed_ar: str) -> str:
         """Reject fixer output if it rewrites, adds English, or drifts away from Arabic."""
@@ -695,6 +739,8 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
                   "- Never insert any English words.\n"
             )
 
+            
+            print("Using Ollama API for Arabic fixing...")
             fixed_candidate = robust_ollama_call({
                 "model": DEFAULT_MT_MODEL,
                 "messages": [
@@ -703,7 +749,7 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
                 ],
                 "stream": False,
                 "options": {
-                    "temperature": 0.0,
+                    "temperature": 0.6,
                     "top_p": 0.2,
                     "num_ctx": 1400
                 }
@@ -1296,7 +1342,7 @@ def transcription_stream_thread(source, config, stop_event, refine_input_q, even
                 accumulated_text = ""
                 last_send_time = time.time()
 
-            # ---- Reset buffers on end-of-voice (this matches SimulStreaming clearing on end-of-voice) :contentReference[oaicite:14]{index=14}
+            
             if is_final:
                 audio_buf.clear()
                 prev_hyp_words = []
@@ -1344,6 +1390,17 @@ def main():
         st.session_state.event_q = queue.Queue()
         st.session_state.cloud_in = queue.Queue()
         st.session_state.cloud_out = queue.Queue()
+        st.session_state.gec_ready = False
+
+    if not st.session_state.get("gec_ready", False):
+        try:
+            # Block until the GEC model is downloaded/loaded once; cached for worker reuse.
+            load_ar_gec_model(device="cuda")
+            st.session_state.gec_ready = True
+            print("[GEC] Preload complete (cached).")
+        except Exception as e:
+            print(f"[GEC] Preload failed, worker will fallback to Ollama fixer: {e}")
+            st.session_state.gec_ready = False
 
     if "refinement_thread_started" not in st.session_state:
         t_ref = threading.Thread(target=refinement_worker, args=(st.session_state.refine_in, st.session_state.refine_out, st.session_state.cloud_in), daemon=True)

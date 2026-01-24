@@ -27,9 +27,9 @@ import torch
 # 1. CONFIGURATION & PROMPTS
 # ==========================================
 
-OLLAMA_API_URL = "https://atjm9td3vh7o51-4000.proxy.runpod.net/llm/generate"
+OLLAMA_API_URL = "https://q7yeubcu2msj4f-4000.proxy.runpod.net/llm/generate"
 LLM_API_HEADERS = {
-    "x-api-key": "default_api_key_change_me",
+    "x-api-key": "c129c38d4d0b559c2b6f823167ad7f7ee3cbcccf941103ae57612ccd5457a817",
     "Content-Type": "application/json",
 }
 DEFAULT_MT_MODEL = "qwen3:8b"
@@ -360,7 +360,7 @@ def robust_ollama_call(payload, timeout=30, retries=1):
     max_tokens = options.get("max_tokens") or payload.get("max_tokens") or 512
     temperature = options.get("temperature")
     if temperature is None:
-        temperature = payload.get("temperature", 0.6)
+        temperature = payload.get("temperature", 0.2)
 
     request_body = {
         "prompt": prompt,
