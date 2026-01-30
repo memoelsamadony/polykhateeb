@@ -22,6 +22,7 @@ from typing import List, Optional, Dict, Any
 from groq import Groq
 import groq
 import torch
+from telegram_sink import telegram_sink_worker
 
 # ==========================================
 # 1. CONFIGURATION & PROMPTS
@@ -50,6 +51,8 @@ if os.path.exists(_ENV_PATH):
         print(f"[ENV] Could not load .env: {e}")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
@@ -450,6 +453,7 @@ def cloud_polish_worker(
                 {"role": "user", "content": user_content},
             ]
 
+            _cloud_t0 = time.time()
             result = groq_chat_with_fallback(
                 groq_client,
                 messages,
@@ -460,6 +464,7 @@ def cloud_polish_worker(
                 per_model_cooldown_sec=10.0,
                 hard_timeout_sec=60.0,
             )
+            _cloud_lat = time.time() - _cloud_t0
 
             if result and result.get("text"):
                 raw_resp = result["text"].strip()
@@ -482,6 +487,7 @@ def cloud_polish_worker(
                         "model": result["model"],
                         "text": fixed_ar,
                         "lang": "ar-fixed",
+                        "lat_s": _cloud_lat,
                     })
 
                 if en_text:
@@ -495,6 +501,7 @@ def cloud_polish_worker(
                         "model": result["model"],
                         "text": en_text,
                         "lang": "en",
+                        "lat_s": _cloud_lat,
                     })
 
                 if de_text:
@@ -508,6 +515,7 @@ def cloud_polish_worker(
                         "model": result["model"],
                         "text": de_text,
                         "lang": "de",
+                        "lat_s": _cloud_lat,
                     })
 
                 # Update sliding window context
@@ -630,7 +638,8 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
                     "id": batch_id,
                     "ar_fixed": corrected_ar,
                     "en_final": final_en,
-                    "de_final": final_de
+                    "de_final": final_de,
+                    "lat_s": 0.0,
                 })
                 continue
 
@@ -702,7 +711,8 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
                 "id": batch_id,
                 "ar_fixed": corrected_ar,
                 "en_final": final_en,
-                "de_final": final_de
+                "de_final": final_de,
+                "lat_s": lat_total,
             })
 
             if log_file_en:
@@ -926,6 +936,7 @@ def transcription_stream_thread(source, config, stop_event, refine_input_q, even
             if not raw:
                 break
             frame_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            time.sleep(0.01)  # 10ms throttle per 30ms frame in file mode
 
         if len(frame_np) == 0:
             continue
@@ -990,7 +1001,7 @@ def transcription_stream_thread(source, config, stop_event, refine_input_q, even
                 print(log_msg)
                 log_to_file(log_msg)
 
-                event_q.put(("update", {"id": chunk_counter, "ar": clean}))
+                event_q.put(("update", {"id": chunk_counter, "ar": clean, "infer_s": t_dur}))
 
                 if batch_start_id is None:
                     batch_start_id = chunk_counter
@@ -1035,6 +1046,7 @@ def main():
         st.session_state.event_q = queue.Queue()
         st.session_state.cloud_in = queue.Queue()
         st.session_state.cloud_out = queue.Queue()
+        st.session_state.telegram_q = queue.Queue()
 
     if "refinement_thread_started" not in st.session_state:
         t_ref = threading.Thread(target=refinement_worker, args=(st.session_state.refine_in, st.session_state.refine_out, st.session_state.cloud_in), daemon=True)
@@ -1052,6 +1064,17 @@ def main():
         add_script_run_ctx(t_cloud)
         t_cloud.start()
         st.session_state.cloud_thread_started = True
+
+    if "telegram_thread_started" not in st.session_state:
+        t_tg = threading.Thread(
+            target=telegram_sink_worker,
+            args=(st.session_state.telegram_q,),
+            kwargs={"bot_token": TELEGRAM_BOT_TOKEN, "chat_id": TELEGRAM_CHAT_ID},
+            daemon=True,
+        )
+        add_script_run_ctx(t_tg)
+        t_tg.start()
+        st.session_state.telegram_thread_started = True
 
     with st.sidebar:
         st.header("⚙️ Settings")
@@ -1161,6 +1184,11 @@ def main():
                         st.session_state.chunks.append(p)
                         st.session_state.last_chunk_id = p.get("id", st.session_state.last_chunk_id)
                         has_data = True
+                        # Fan out raw Arabic chunk to Telegram
+                        infer_info = f" (Infer: {p['infer_s']:.2f}s)" if "infer_s" in p else ""
+                        st.session_state.telegram_q.put({
+                            "text": f"<b>[ASR #{p.get('id', '?')}]{infer_info}</b>\n{p['ar']}"
+                        })
                     elif t == "error":
                         st.error(f"Error: {p}")
                         st.session_state.stop_event.set()
@@ -1179,6 +1207,16 @@ def main():
                         st.session_state.refined_blocks_en.append(f"[{p['id']}] {p['en_final']}")
                         st.session_state.refined_blocks_de.append(f"[{p['id']}] {p['de_final']}")
                         has_data = True
+                        # Fan out to Telegram
+                        _lat_info = f" (Lat: {p['lat_s']:.2f}s)" if "lat_s" in p else ""
+                        st.session_state.telegram_q.put({
+                            "text": (
+                                f"<b>[Ollama #{p['id']}]{_lat_info}</b>\n"
+                                f"<b>AR:</b> {p['ar_fixed']}\n"
+                                f"<b>EN:</b> {p['en_final']}\n"
+                                f"<b>DE:</b> {p['de_final']}"
+                            )
+                        })
             except queue.Empty: pass
 
             try:
@@ -1188,6 +1226,14 @@ def main():
                         f"[{p['range'][0]}–{p['range'][1]}] ({p['lang']}, {p['model']})\n{p['text']}"
                     )
                     has_data = True
+                    # Fan out to Telegram
+                    _clat = f" (Lat: {p['lat_s']:.2f}s)" if "lat_s" in p else ""
+                    st.session_state.telegram_q.put({
+                        "text": (
+                            f"<b>[Cloud {p['range'][0]}–{p['range'][1]}] ({p['lang']}, {p['model']}){_clat}</b>\n"
+                            f"{p['text']}"
+                        )
+                    })
             except queue.Empty:
                 pass
             
