@@ -27,12 +27,12 @@ import torch
 # 1. CONFIGURATION & PROMPTS
 # ==========================================
 
-OLLAMA_API_URL = "https://q7yeubcu2msj4f-4000.proxy.runpod.net/llm/generate"
+OLLAMA_API_URL = "https://j4clsjgwgcvkzg-4000.proxy.runpod.net/llm/chat"
 LLM_API_HEADERS = {
     "x-api-key": "c129c38d4d0b559c2b6f823167ad7f7ee3cbcccf941103ae57612ccd5457a817",
     "Content-Type": "application/json",
 }
-DEFAULT_MT_MODEL = "qwen3:8b"
+DEFAULT_MT_MODEL = "command-r:35b-8k"
 
 _ENV_PATH = os.path.join(os.getcwd(), ".env")
 if os.path.exists(_ENV_PATH):
@@ -62,157 +62,6 @@ GROQ_MODEL_FALLBACK: List[str] = [
     "llama-3.1-8b-instant",
     "groq/compound-mini",
 ]
-
-PROMPT_TEMPLATES = {
-    "Standard (Fusha/MSA)": {
-    "fixer": """الدور: مُرمِّم نص عربي محافظ لأخطاء التفريغ الصوتي (ASR) في الخُطبة.
-المهمة: تصحيح أخطاء ASR (الحروف/الكلمات/التكرار) وتحسين قابلية القراءة بترقيم مناسب، مع الحفاظ على نفس المحتوى والمعنى.
-
-مهم جداً عن الإدخال:
-- هذا النص ناتج من ASR (تفريغ صوتي تلقائي).
-- الأسطر ليست جُملاً مستقلة؛ بل هي مقاطع متتابعة من كلام واحد، وقد ينقطع المعنى في نهاية السطر.
-
-تنسيق الإخراج:
-1) أخرج العربية فقط (بدون أي شرح/تعليقات/عناوين).
-2) اسمح لنفسك بدمج الأسطر حسب المعنى لتكوين جُمَل/فقرات صحيحة القراءة.
-   - عند الدمج: ادمج بسطر واحد مع مسافة واحدة بين الكلمات.
-   - يمكن أن تُبقي فواصل أسطر بين الفقرات فقط عند الانتقال الواضح لمقطع جديد (مثلاً: "أما بعد..." ثم موضوع جديد).
-3) أضف علامات الترقيم العربية لتحسين القراءة فقط: ، ؛ . ؟ ( )
-   - لا تُفرِط في الترقيم.
-
-ممنوع قطعاً:
-- لا تُعيد الصياغة، لا تُجمّل الأسلوب، لا تُبدّل المعنى.
-- لا تُضيف آيات/أحاديث/عبارات غير موجودة في الإدخال.
-- لا تحذف جُملاً كاملة. (مسموح حذف هراء ASR والتكرار فقط كما بالأسفل)
-- إذا لم تكن متأكداً 100% من التصحيح، اترك الكلمة كما هي.
-
-قواعد دمج الأسطر "حسب المعنى" (عملياً):
-- إذا كان السطر ينتهي بكلام غير مكتمل أو يبدو مقطوعاً، دمجه بالسطر التالي مباشرة.
-  أمثلة: ينتهي بـ (أن، لا، إلى، من، في، على، و، ثم، فـ، حيث، الذي/التي، أو) أو ينتهي بعبارة ناقصة.
-- إذا بدأ السطر التالي بتتمة واضحة لما قبله (مثل: "إله إلا الله" بعد "أشهد أن لا") فادمجهما.
-- إذا كان السطر التالي يبدأ بجملة جديدة واضحة (مثل: "أما بعد"، "أيها الناس"، "يا أيها الذين آمنوا"، "ثم") فابدأ جملة جديدة مع ترقيم مناسب.
-- لا تُغيّر ترتيب المقاطع؛ فقط اربط المقطوع بالمكمل.
-
-مسموح لك تصحيحه (بدقة):
-أ) أخطاء الحروف والكتابة (آمنة):
-- تصحيح سقطات/زيادات الحروف الواضحة: (شريح→شريك)، (سريك→شريك)، (تلام→كلام) إذا كان المقصود واضحاً.
-- تصحيح الفصل/الدمج: "عبد ه"→"عبده"، "لااله"→"لا إله".
-- تصحيح همزات/ألف/ياء/ألف مقصورة فقط عند الوضوح: أ/إ/آ/ا ، ي/ى ، ة/ه.
-
-ب) استبدال كلمة خاطئة بكلمة صحيحة (مشروط):
-- غيّر الكلمة فقط إذا كانت تجعل العبارة غير مفهومة في سياق الخُطبة
-  وكان هناك بديل واحد واضح لا لبس فيه.
-أمثلة مسموحة:
-- اتقوا ↔ اشتقوا (اختر اتقوا)
-- شر الأمور ↔ وصر الأمور (اختر شر الأمور)
-- شريك ↔ سريك (اختر شريك)
-- فلا هادي له ↔ فلا هاد (اختر فلا هادي له)
-ملاحظة: إذا وُجد أكثر من احتمال صحيح، لا تغيّرها.
-
-ج) تنظيف تكرار وهراء ASR:
-- إذا تكررت نفس العبارة مباشرة بدون معنى إضافي، احتفظ بنسخة واحدة فقط.
-- احذف التكرار الهرائي الطويل (مثل: "المصدرات المصدرات ..." عشرات المرات).
-
-د) تحسين القراءة بالترقيم فقط:
-- أضف (،) بين الجمل الفرعية.
-- ضع (.) عند نهاية الجملة، و(?) للسؤال.
-- استخدم (:) أو (؛) عند الحاجة البسيطة.
-- لا تغيّر الكلمات لأجل "البلاغة".
-
-النتيجة النهائية:
-- نفس كلام الإدخال (نفس المحتوى والترتيب)، لكن مصححاً، مدموجاً حسب المعنى، ومقروءاً بعلامات ترقيم مناسبة.
-"""
-
-,
-
-    "translator": """TASK: Translate Arabic to English.
-STYLE: Formal, clear sermon-like English (not poetic, not archaic).
-
-RULES (MUST):
-1) Output ONLY the translation text (no intro, no notes).
-2) Translate ONLY what is present in the Arabic input. Do NOT add missing khutbah phrases/verses.
-3) If a phrase is garbled/unclear, write [unclear] rather than guessing.
-4) Keep Islamic terms consistent (Allah, Qur'an, Salah, Zakah, Jihad, Taqwa, etc.).
-5) If the input is not Arabic (e.g., German/English), output exactly: [non-arabic].""",
-
-    "translator_de": """TASK: Translate Arabic to German.
-STYLE: Formal, clear sermon-like German (not poetic or archaic).
-
-RULES (MUST):
-1) Output ONLY the translation text (no intro, no notes).
-2) Translate ONLY what is present in the Arabic input. Do NOT add missing khutbah phrases/verses.
-3) If a phrase is garbled/unclear, write [unklar] rather than guessing.
-4) Keep Islamic terms consistent (Allah, Quran, Salah, Zakah, Jihad, Taqwa, etc.).
-5) If the input is not Arabic (e.g., English/German), output exactly: [non-arabic]."""
-    },
-
-    "Egyptian (Masri)": {
-    "fixer": """ROLE: Conservative ASR Restorer (Egyptian Arabic).
-TASK: Clean Egyptian Arabic khutbah/speech transcription produced by ASR.
-
-RULES (MUST):
-1) Output Arabic ONLY.
-2) Preserve DIALECT. Do NOT convert Masri into MSA.
-3) Do NOT paraphrase. Do NOT add or remove sentences.
-4) Only fix obvious ASR phonetic typos that break meaning.
-5) LOANWORDS: If you see Arabized English (e.g., "كاميكلز"), keep it as-is (do NOT replace with a random Arabic word).
-6) Never insert English words, no commentary, no headings.""",
-
-    "translator": """TASK: Translate Egyptian Arabic to English.
-STYLE: Natural, conversational English (clear, not slangy unless the Arabic is slangy).
-
-RULES (MUST):
-1) Output ONLY the translation (no intro, no notes).
-2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
-3) If a phrase is garbled/unclear, write [unclear] rather than guessing.
-4) LOANWORDS: If you detect Arabized English, translate it to the intended English term when confident; otherwise keep it as a transliteration in brackets.
-5) If the input is not Arabic, output exactly: [non-arabic].""",
-
-    "translator_de": """TASK: Translate Egyptian Arabic to German.
-STYLE: Natural, conversational German (clear, not slangy unless the Arabic is slangy).
-
-RULES (MUST):
-1) Output ONLY the translation (no intro, no notes).
-2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
-3) If a phrase is garbled/unclear, write [unklar] rather than guessing.
-4) LOANWORDS: If you detect Arabized English, translate it to the intended English term when confident; otherwise keep it as a transliteration in brackets.
-5) If the input is not Arabic, output exactly: [non-arabic]."""
-    },
-
-    "Gulf (Khaleeji)": {
-    "fixer": """ROLE: Conservative ASR Restorer (Gulf Arabic).
-TASK: Clean Khaleeji Arabic transcription produced by ASR.
-
-RULES (MUST):
-1) Output Arabic ONLY.
-2) Preserve DIALECT (Khaleeji). Do NOT convert to MSA.
-3) Do NOT paraphrase. Do NOT add or remove sentences.
-4) Only fix obvious ASR phonetic typos that break meaning.
-5) Keep Khaleeji words as-is (e.g., شلونك، زين، علومك).
-6) LOANWORDS: Handle English product/system terms correctly if present; do NOT replace with random Arabic.
-7) Never insert English words, no commentary, no headings.""",
-
-    "translator": """TASK: Translate Gulf Arabic to English.
-STYLE: Respectful, natural English.
-
-RULES (MUST):
-1) Output ONLY the translation (no intro, no notes).
-2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
-3) If a phrase is garbled/unclear, write [unclear] rather than guessing.
-4) Keep Islamic terms consistent (Allah, Qur'an, Salah, etc.).
-5) If the input is not Arabic, output exactly: [non-arabic].""",
-
-    "translator_de": """TASK: Translate Gulf Arabic to German.
-STYLE: Respectful, natural German.
-
-RULES (MUST):
-1) Output ONLY the translation (no intro, no notes).
-2) Translate ONLY what is present. Do NOT add missing khutbah phrases/verses.
-3) If a phrase is garbled/unclear, write [unklar] rather than guessing.
-4) Keep Islamic terms consistent (Allah, Quran, Salah, etc.).
-5) If the input is not Arabic, output exactly: [non-arabic]."""
-    }
-}
 
 
 
@@ -334,38 +183,23 @@ def gec_correct_ar(text: str, tok, model, max_new_tokens: int = 256) -> str:
 
 
 def robust_ollama_call(payload, timeout=30, retries=1):
+    """Call the /llm/chat endpoint with a messages array."""
     messages = payload.get("messages", []) if isinstance(payload, dict) else []
-    prompt_parts = []
-
-    for m in messages:
-        try:
-            content = str(m.get("content", "")).strip()
-            role = str(m.get("role", "")).strip().lower()
-        except Exception:
-            continue
-
-        if not content:
-            continue
-        if role == "system":
-            prompt_parts.append(content)
-        else:
-            prompt_parts.append(f"{role}: {content}" if role else content)
-
-    prompt = "\n\n".join([p for p in prompt_parts if p]) or str(payload.get("prompt", "")).strip()
-    if not prompt:
-        log("[API] Missing prompt content")
+    if not messages:
+        log("[API] Missing messages")
         return None
 
     options = payload.get("options", {}) if isinstance(payload, dict) else {}
-    max_tokens = options.get("max_tokens") or payload.get("max_tokens") or 512
+    max_tokens = options.get("max_tokens") or payload.get("max_tokens") or 2048
     temperature = options.get("temperature")
     if temperature is None:
         temperature = payload.get("temperature", 0.2)
 
     request_body = {
-        "prompt": prompt,
-        "max_tokens": max_tokens,
+        "messages": messages,
+        "model": payload.get("model", DEFAULT_MT_MODEL),
         "temperature": temperature,
+        "max_tokens": max_tokens,
     }
 
     for attempt in range(retries + 1):
@@ -400,6 +234,28 @@ def robust_ollama_call(payload, timeout=30, retries=1):
         if attempt < retries:
             time.sleep(1)
     return None
+
+
+def parse_tagged_response(text: str) -> Dict[str, str]:
+    """Parse [Arabic] / [German] / [English] tagged response from command-r."""
+    result = {"fixed_ar": "", "en": "", "de": ""}
+    if not text:
+        return result
+
+    # Match sections between [Tag] headers
+    sections = re.split(r'\[(?:Arabic|German|English)\]', text)
+    tags = re.findall(r'\[(Arabic|German|English)\]', text)
+
+    for tag, content in zip(tags, sections[1:]):
+        content = content.strip()
+        if tag == "Arabic":
+            result["fixed_ar"] = content
+        elif tag == "German":
+            result["de"] = content
+        elif tag == "English":
+            result["en"] = content
+
+    return result
 
 def protect_terms(text):
     mapping = {}
@@ -513,20 +369,41 @@ def cloud_polish_worker(
     end_id = None
     last_flush = time.time()
 
+    # Sliding window of previous results for context
+    cloud_context_window: List[Dict[str, str]] = []
+
     def make_system_prompt() -> str:
         return (
-            "ROLE: Conservative Arabic ASR fixer and translator for khutbah/speech.\n"
-            "TASK: Given raw Arabic ASR text (may contain multiple chunks separated by blank lines), do: \n"
-            "1) Minimal Arabic fix (no paraphrase, no adding/removing sentences). Arabic only.\n"
-            "2) Translate to English (en) and German (de).\n"
-            "OUTPUT: Strict JSON with keys fixed_ar, en, de. Example:\n"
-            "{\"fixed_ar\": \"...\", \"en\": \"...\", \"de\": \"...\"}\n"
+            "You are an Arabic Islamic sermon (khutba) editor and translator.\n\n"
+            "STEPS:\n"
+            "1. Fix spelling and grammar errors in the Arabic ASR transcript. "
+            "Keep the original wording and style. Do not paraphrase or modernize classical expressions.\n"
+            "2. Translate the corrected Arabic into German.\n"
+            "3. Translate the corrected Arabic into English.\n\n"
+            "OUTPUT FORMAT (follow exactly):\n\n"
+            "[Arabic]\n<corrected Arabic text here>\n\n"
+            "[German]\n<German translation here>\n\n"
+            "[English]\n<English translation here>\n\n"
             "RULES:\n"
-            "- fixed_ar must stay in Arabic and keep structure; fix only obvious ASR mistakes.\n"
-            "- en/de must translate only what is present; if unclear, use [unclear] / [unklar].\n"
-            "- If input is not Arabic, set fixed_ar='[non-arabic]' and en/de='[non-arabic]'.\n"
-            "- No extra text, no code fences, JSON only."
+            "- Preserve all Quran verses and hadith exactly as spoken.\n"
+            "- Keep Islamic terms like صلى الله عليه وسلم, سبحانه وتعالى, إن شاء الله "
+            "untranslated in parentheses.\n"
+            "- Do not add commentary or explanation.\n"
+            "- Preserve paragraph breaks from the original.\n"
+            "- If a phrase is garbled/unclear, write [unclear] in English or [unklar] in German.\n"
+            "- If the input is not Arabic, output [non-arabic] in all three sections.\n"
+            "- You may receive previous context (already processed) above the target text. "
+            "Use it ONLY for understanding continuity. Do NOT include the context in your output. "
+            "Output ONLY the fix and translations of the TARGET section."
         )
+
+    def build_cloud_user_message(batch_text: str) -> str:
+        parts = []
+        if cloud_context_window:
+            ctx_lines = [entry.get("fixed_ar", "") for entry in cloud_context_window]
+            parts.append("### PREVIOUS CONTEXT (read-only, do NOT include in output):\n" + "\n".join(ctx_lines))
+        parts.append("### TARGET TEXT (fix and translate this):\n" + batch_text)
+        return "\n\n".join(parts)
 
     while True:
         try:
@@ -567,9 +444,10 @@ def cloud_polish_worker(
 
         if groq_client:
             log(f"[CLOUD] Flushing {start_id}-{end_id} ({len(buf)} parts) -> langs=['en','de'] with Arabic fix")
+            user_content = build_cloud_user_message(batch)
             messages = [
                 {"role": "system", "content": make_system_prompt()},
-                {"role": "user", "content": batch},
+                {"role": "user", "content": user_content},
             ]
 
             result = groq_chat_with_fallback(
@@ -586,20 +464,10 @@ def cloud_polish_worker(
             if result and result.get("text"):
                 raw_resp = result["text"].strip()
 
-                def _extract_json(txt: str) -> Dict[str, str]:
-                    try:
-                        t = txt.strip()
-                        if t.startswith("```"):
-                            t = re.sub(r"^```(json)?", "", t, flags=re.IGNORECASE).strip()
-                            t = t.rstrip("`").rstrip()
-                        return json.loads(t)
-                    except Exception:
-                        return {}
-
-                parsed = _extract_json(raw_resp)
-                fixed_ar = str(parsed.get("fixed_ar", "")).strip() if parsed else ""
-                en_text = str(parsed.get("en", "")).strip() if parsed else ""
-                de_text = str(parsed.get("de", "")).strip() if parsed else ""
+                parsed = parse_tagged_response(raw_resp)
+                fixed_ar = parsed.get("fixed_ar", "").strip()
+                en_text = parsed.get("en", "").strip()
+                de_text = parsed.get("de", "").strip()
 
                 safe_model = sanitize_filename(result.get("model", "cloud"))
 
@@ -642,6 +510,15 @@ def cloud_polish_worker(
                         "lang": "de",
                     })
 
+                # Update sliding window context
+                cloud_context_window.append({
+                    "fixed_ar": fixed_ar or batch,
+                    "en": en_text,
+                    "de": de_text,
+                })
+                if len(cloud_context_window) > CONTEXT_WINDOW_SIZE:
+                    cloud_context_window.pop(0)
+
         buf = []
         start_id = None
         end_id = None
@@ -671,38 +548,50 @@ def load_whisper_model(model_size, device, compute_type):
 
 
 # --- WORKER 1: REFINEMENT ---
+CONTEXT_WINDOW_SIZE = 15  # max previous chunks kept for context
+
 def refinement_worker(input_q, output_q, cloud_q=None, config=None):
     log("Refinement Worker: STARTING")
 
-    # Default prompts (will be overridden per-job if 'prompts' passed)
-    current_fixer_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"]["fixer"]
-    current_translator_en_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"]["translator"]
-    current_translator_de_prompt = PROMPT_TEMPLATES["Standard (Fusha/MSA)"].get("translator_de", "")
+    # Sliding window of previous results for context
+    context_window: List[Dict[str, str]] = []  # each: {"raw": ..., "fixed_ar": ..., "en": ..., "de": ...}
 
-    # Conservative guard thresholds (tune if needed)
-    SIMILARITY_MIN = 0.88          # reject fixer output if it rewrites too much
-    MIN_AR_RATIO = 0.65            # reject if "Arabic-ness" drops too far
+    def make_ollama_system_prompt() -> str:
+        return (
+            "You are an Arabic Islamic sermon (khutba) editor and translator.\n\n"
+            "STEPS:\n"
+            "1. Fix spelling and grammar errors in the Arabic ASR transcript. "
+            "Keep the original wording and style. Do not paraphrase or modernize classical expressions.\n"
+            "2. Translate the corrected Arabic into German.\n"
+            "3. Translate the corrected Arabic into English.\n\n"
+            "OUTPUT FORMAT (follow exactly):\n\n"
+            "[Arabic]\n<corrected Arabic text here>\n\n"
+            "[German]\n<German translation here>\n\n"
+            "[English]\n<English translation here>\n\n"
+            "RULES:\n"
+            "- Preserve all Quran verses and hadith exactly as spoken.\n"
+            "- Keep Islamic terms like صلى الله عليه وسلم, سبحانه وتعالى, إن شاء الله "
+            "untranslated in parentheses.\n"
+            "- Do not add commentary or explanation.\n"
+            "- Preserve paragraph breaks from the original.\n"
+            "- If a phrase is garbled/unclear, write [unclear] in English or [unklar] in German.\n"
+            "- If the input is not Arabic, output [non-arabic] in all three sections.\n"
+            "- You may receive previous context (already processed) above the target text. "
+            "Use it ONLY for understanding continuity. Do NOT include the context in your output. "
+            "Output ONLY the fix and translations of the TARGET section.\n\n"
+            + glossary_block()
+        )
 
-    def sanitize_fixed_ar(raw_ar: str, fixed_ar: str) -> str:
-        """Reject fixer output if it rewrites, adds English, or drifts away from Arabic."""
-        if not fixed_ar:
-            return raw_ar
-
-        fx = fixed_ar.strip()
-
-        # Reject if it inserted Latin letters (we want Arabic-only for fixed_ar)
-        if re.search(r"[A-Za-z]", fx):
-            return raw_ar
-
-        # Reject if it looks like non-arabic drift
-        if arabic_ratio(fx) < MIN_AR_RATIO:
-            return raw_ar
-
-        # Reject if it rewrote too much (hallucination / paraphrase)
-        if similarity(raw_ar, fx) < SIMILARITY_MIN:
-            return raw_ar
-
-        return fx
+    def build_user_message(raw_ar: str) -> str:
+        """Build user message with sliding window context + target text."""
+        parts = []
+        if context_window:
+            ctx_lines = []
+            for entry in context_window:
+                ctx_lines.append(entry.get("fixed_ar", entry.get("raw", "")))
+            parts.append("### PREVIOUS CONTEXT (read-only, do NOT include in output):\n" + "\n".join(ctx_lines))
+        parts.append("### TARGET TEXT (fix and translate this):\n" + raw_ar)
+        return "\n\n".join(parts)
 
     while True:
         try:
@@ -724,13 +613,7 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
             if not raw_ar:
                 continue
 
-            # Allow per-job style prompt overrides
-            if "prompts" in job and job["prompts"]:
-                current_fixer_prompt = job["prompts"].get("fixer", current_fixer_prompt)
-                current_translator_en_prompt = job["prompts"].get("translator", current_translator_en_prompt)
-                current_translator_de_prompt = job["prompts"].get("translator_de", current_translator_de_prompt)
-
-            # If the speaker switched language (not Arabic), skip "fixing" and translate as [non-arabic]
+            # If the speaker switched language (not Arabic), skip
             if arabic_ratio(raw_ar) < 0.50:
                 corrected_ar = raw_ar
                 final_en = "[non-arabic]"
@@ -754,36 +637,58 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
             log(f"Refining Batch {batch_id}...")
 
             # -------------------------
-            # 1) Conservative Restorer
+            # Single unified fix + translate call
             # -------------------------
-            fixer_sys = current_fixer_prompt.strip()
+            user_msg = build_user_message(raw_ar)
 
-            
-            print("Using Ollama API for Arabic fixing...")
-            fixed_candidate = robust_ollama_call({
+            result_text = robust_ollama_call({
                 "model": DEFAULT_MT_MODEL,
                 "messages": [
-                    {"role": "system", "content": fixer_sys},
-                    {"role": "user", "content": raw_ar}
+                    {"role": "system", "content": make_ollama_system_prompt()},
+                    {"role": "user", "content": user_msg}
                 ],
                 "stream": False,
                 "options": {
-                    "temperature": 0.6,
-                    "top_p": 0.2,
-                    "num_ctx": 1400
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "num_ctx": 4096
                 }
             }, timeout=120)
 
-            # NOTE: Gating (similarity/arabic_ratio/latin check) temporarily disabled per request.
-            # corrected_ar = sanitize_fixed_ar(raw_ar, fixed_candidate)
-            corrected_ar = fixed_candidate if fixed_candidate else raw_ar
-            lat_fix = time.time() - t_submitted
+            # Parse tagged [Arabic]/[German]/[English] response
+            parsed = parse_tagged_response(result_text) if result_text else {}
+            corrected_ar = parsed.get("fixed_ar", "").strip()
+            final_en = parsed.get("en", "").strip()
+            final_de = parsed.get("de", "").strip()
+
+            # Fallback if JSON parse failed but we got some text
+            if not corrected_ar:
+                corrected_ar = raw_ar
+            if not final_en:
+                final_en = "[unclear]"
+            if not final_de:
+                final_de = "[unklar]"
+
+            lat_total = time.time() - t_submitted
+
+            # Update sliding window context
+            context_window.append({
+                "raw": raw_ar,
+                "fixed_ar": corrected_ar,
+                "en": final_en,
+                "de": final_de,
+            })
+            if len(context_window) > CONTEXT_WINDOW_SIZE:
+                context_window.pop(0)
+
+            # Log fixed Arabic
             if log_file_ar:
                 append_to_file(
                     log_file_ar,
-                    f"[{get_current_ts_string()}] [Batch {batch_id}] (Lat: {lat_fix:.2f}s)\n{corrected_ar}\n"
+                    f"[{get_current_ts_string()}] [Batch {batch_id}] (Lat: {lat_total:.2f}s)\n{corrected_ar}\n"
                 )
 
+            # Forward to cloud worker
             if cloud_q is not None:
                 cloud_q.put({
                     "range": job.get("range", (batch_id, batch_id)),
@@ -791,64 +696,6 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
                     "ar": raw_ar,
                     "final": bool(job.get("final", False)),
                 })
-
-            # -------------------------
-            # 2) Refined Translation (EN/DE)
-            # -------------------------
-            translator_sys_en = (
-                current_translator_en_prompt.strip()
-                + "\n\n"
-                + glossary_block()
-                + "\n\nCRITICAL RULES (must follow):\n"
-                  "- Translate ONLY what is present in the Arabic input. Do NOT add khutbah phrases, Qur’anic verses, or explanations that are not in the text.\n"
-                  "- If a phrase is garbled/unclear, write [unclear] rather than guessing.\n"
-                  "- Output ONLY the translation.\n"
-            )
-
-            translator_sys_de = (
-                current_translator_de_prompt.strip()
-                + "\n\n"
-                + glossary_block()
-                + "\n\nCRITICAL RULES (must follow):\n"
-                  "- Translate ONLY what is present in the Arabic input. Do NOT add khutbah phrases, Qur’anic verses, or explanations that are not in the text.\n"
-                  "- If a phrase is garbled/unclear, write [unklar] rather than guessing.\n"
-                  "- Output ONLY the translation.\n"
-            )
-
-            final_en = robust_ollama_call({
-                "model": DEFAULT_MT_MODEL,
-                "messages": [
-                    {"role": "system", "content": translator_sys_en},
-                    {"role": "user", "content": corrected_ar}
-                ],
-                "stream": False,
-                "options": {
-                    "temperature": 0.0,
-                    "top_p": 0.2,
-                    "num_ctx": 1800
-                }
-            }, timeout=50)
-
-            final_de = robust_ollama_call({
-                "model": DEFAULT_MT_MODEL,
-                "messages": [
-                    {"role": "system", "content": translator_sys_de},
-                    {"role": "user", "content": corrected_ar}
-                ],
-                "stream": False,
-                "options": {
-                    "temperature": 0.0,
-                    "top_p": 0.2,
-                    "num_ctx": 1800
-                }
-            }, timeout=50)
-
-            if not final_en:
-                final_en = "[unclear]"
-            if not final_de:
-                final_de = "[unklar]"
-
-            lat_total = time.time() - t_submitted
 
             output_q.put({
                 "type": "refined_batch",
@@ -878,21 +725,26 @@ def refinement_worker(input_q, output_q, cloud_q=None, config=None):
             time.sleep(1)
 
 
-# --- WORKER 2: AUDIO & WHISPER (Combined Fixes) ---
+# --- WORKER 2: NVIDIA NeMo FastConformer (RNNT/Transducer) ---
 def transcription_stream_thread(source, config, stop_event, refine_input_q, event_q):
     """
-    SimulStreaming-core replication (practical version for faster-whisper):
-      - VAC/VAD iterator: discard non-voice, accumulate voiced chunks, mark end-of-voice as final.
-      - LocalAgreement: commit only the longest common prefix between consecutive hypotheses.
-      - Boundary safety: trim last word on non-final chunks (prevents partial-word garbage).
-      - Sliding audio buffer (max 30s) + reset on end-of-voice.
+    NVIDIA FastConformer (RNNT/Transducer Mode).
+    - Mode: RNNT (smarter than CTC).
+    - Context: Prepends last 0.5s of audio to current chunk to fix edge-word cuts.
     """
     import time
     import wave
-    import re
     import datetime
-    from collections import deque, Counter
     import numpy as np
+    import queue
+    import torch
+    import nemo.collections.asr as nemo_asr
+    import soundfile as sf
+    import tempfile
+    import sounddevice as sd
+
+    stream = None
+    wf = None
 
     # -----------------------------
     # 0) Helpers
@@ -901,7 +753,6 @@ def transcription_stream_thread(source, config, stop_event, refine_input_q, even
         return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
     log_raw = config["logs"]["raw_ar"]
-    log_pre_lcp = config["logs"].get("pre_lcp_ar")
 
     def log_to_file(text, *, path=log_raw):
         try:
@@ -910,274 +761,50 @@ def transcription_stream_thread(source, config, stop_event, refine_input_q, even
         except:
             pass
 
-    # Normalize Arabic-ish whitespace (don’t overdo it)
-    _ws_re = re.compile(r"\s+")
-    def norm_text(s: str) -> str:
-        s = (s or "").replace("\u200f", "").replace("\u200e", "")
-        s = _ws_re.sub(" ", s).strip()
-        return s
-
-    def split_words(s: str):
-        s = norm_text(s)
-        return s.split(" ") if s else []
-
-    def join_words(ws):
-        return " ".join([w for w in ws if w]).strip()
-
-    def lcp_words(a, b):
-        """Longest common prefix at word level."""
-        n = min(len(a), len(b))
-        i = 0
-        while i < n and a[i] == b[i]:
-            i += 1
-        return a[:i]
-
-    _ar_diacritics = re.compile(r"[\u064B-\u065F\u0670\u06D6-\u06ED]")
-    _ar_punct = re.compile(r"[^\w\u0600-\u06FF]+")
-
-    def norm_ar_word(w: str) -> str:
-        w = (w or "").strip()
-        w = _ar_diacritics.sub("", w)
-        w = w.replace("ـ", "")  # tatweel
-        w = w.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ٱ", "ا")
-        w = w.replace("ى", "ي")
-        w = w.replace("ؤ", "و").replace("ئ", "ي")
-        w = _ar_punct.sub("", w)
-        return w
-
-    def best_overlap_anywhere(tail_words, hyp_words, max_k=80, max_mismatches=1):
-        """
-        Find (j,k) such that tail_words[-k:] ~ hyp_words[j:j+k] (approx, allow <=max_mismatches)
-        Return j,k. If none, return 0,0.
-        """
-        t = [norm_ar_word(x) for x in tail_words]
-        h = [norm_ar_word(x) for x in hyp_words]
-        max_k = min(int(max_k), len(t), len(h))
-        if max_k <= 0:
-            return 0, 0
-
-        for k in range(max_k, 0, -1):
-            t_slice = t[-k:]
-            for j in range(0, len(h) - k + 1):
-                mism = 0
-                for i in range(k):
-                    if t_slice[i] != h[j + i]:
-                        mism += 1
-                        if mism > max_mismatches:
-                            break
-                if mism <= max_mismatches:
-                    return j, k
-        return 0, 0
-
-    def trim_last_word(words):
-        """Drop last word (chunk boundary safety)"""
-        if not words:
-            return words
-        return words[:-1]
-
     # -----------------------------
-    # 1) Rolling audio buffer (same idea you had)
-    # -----------------------------
-    class RollingAudioBuffer:
-        def __init__(self, sr: int, max_sec: float):
-            self.sr = int(sr)
-            self.max_samples = int(max_sec * self.sr)
-            self._chunks = deque()
-            self.n_samples = 0
-
-        def append(self, audio: np.ndarray) -> None:
-            if audio is None or len(audio) == 0:
-                return
-            a = np.asarray(audio, dtype=np.float32).reshape(-1)
-            self._chunks.append(a)
-            self.n_samples += len(a)
-            self._trim_to_max()
-
-        def _trim_to_max(self) -> None:
-            while self.n_samples > self.max_samples and self._chunks:
-                extra = self.n_samples - self.max_samples
-                left = self._chunks[0]
-                if len(left) <= extra:
-                    self._chunks.popleft()
-                    self.n_samples -= len(left)
-                else:
-                    self._chunks[0] = left[extra:]
-                    self.n_samples -= extra
-
-        def get_buffer(self) -> np.ndarray:
-            if not self._chunks:
-                return np.zeros((0,), dtype=np.float32)
-            return np.concatenate(self._chunks)
-
-        def clear(self):
-            self._chunks.clear()
-            self.n_samples = 0
-
-    # -----------------------------
-    # 2) VAC / VAD iterator (SimulStreaming-style)
-    #    Paper describes 0.04s frames + min_nonvoice 500ms + padding 100ms, and
-    #    hold voice until MinChunkSize seconds or end-of-voice. :contentReference[oaicite:8]{index=8}
+    # 1) Load NVIDIA NeMo Model (RNNT Mode)
     # -----------------------------
     try:
-        import webrtcvad
-        _VAD_OK = True
-        print("webrtcvad imported successfully.")
-    except Exception:
-        _VAD_OK = False
+        print(f"[{get_ts()}] Loading NVIDIA FastConformer (RNNT)...")
+        asr_model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained(
+            model_name="nvidia/stt_ar_fastconformer_hybrid_large_pc_v1.0"
+        ).cuda()
 
-    class VacIterator:
-        """
-        Yields (voiced_audio_np_float32, is_final)
-        - Reads fixed frames (frame_sec)
-        - Discards non-voice frames
-        - Accumulates voiced frames until:
-            * voiced >= min_voiced_sec -> yield (is_final=False)
-            * or end-of-voice detected (silence >= min_silence_ms) -> yield remainder (is_final=True)
-        """
-        def __init__(self, sr=16000, frame_sec=0.04, min_silence_ms=500, pad_ms=100, min_voiced_sec=1.0, max_voiced_sec=12.0, vad_mode=2):
-            self.sr = int(sr)
-            self.frame_sec = float(frame_sec)
-            self.frame_samples = int(self.sr * self.frame_sec)
-            self.min_silence_ms = int(min_silence_ms)
-            self.pad_samples = int(self.sr * (pad_ms / 1000.0))
-            self.min_voiced_samples = int(self.sr * float(min_voiced_sec))
-            self.max_voiced_samples = int(self.sr * float(max_voiced_sec))
+        # Switch to RNNT decoder for better boundary handling
+        asr_model.change_decoding_strategy(decoder_type="rnnt")
+        asr_model.eval()
 
-            self.vad = webrtcvad.Vad(vad_mode) if _VAD_OK else None
-            self.in_voice = False
-            self.silence_ms = 0
+        # Disable dithering/padding for stability
+        asr_model.preprocessor.featurizer.dither = 0.0
+        asr_model.preprocessor.featurizer.pad_to = 0
 
-            self.pad_buf = deque()          # holds last pad_samples of audio
-            self.voiced_chunks = []         # list of np arrays for current voiced accumulation
-            self.voiced_samples = 0
-
-        def _is_speech(self, frame_f32: np.ndarray) -> bool:
-            if self.vad is None:
-                # Fallback energy gate (worse than real VAD but better than nothing)
-                return float(np.sqrt(np.mean(frame_f32 * frame_f32))) > 0.01
-
-            # WebRTC VAD expects 16-bit PCM mono
-            pcm16 = np.clip(frame_f32 * 32768.0, -32768, 32767).astype(np.int16).tobytes()
-            return self.vad.is_speech(pcm16, self.sr)
-
-        def push_frame(self, frame_f32: np.ndarray):
-            out = []
-
-            if frame_f32 is None or len(frame_f32) == 0:
-                return out
-
-            # ensure exact frame size for webrtcvad
-            if len(frame_f32) != self.frame_samples:
-                if len(frame_f32) < self.frame_samples:
-                    frame_f32 = np.pad(frame_f32, (0, self.frame_samples - len(frame_f32)))
-                else:
-                    frame_f32 = frame_f32[:self.frame_samples]
-
-            # Keep rolling padding buffer
-            self.pad_buf.append(frame_f32)
-            # trim pad_buf to pad_samples total
-            total = sum(len(x) for x in self.pad_buf)
-            while total > self.pad_samples and self.pad_buf:
-                drop = total - self.pad_samples
-                x = self.pad_buf[0]
-                if len(x) <= drop:
-                    self.pad_buf.popleft()
-                    total -= len(x)
-                else:
-                    self.pad_buf[0] = x[drop:]
-                    total -= drop
-
-            speech = self._is_speech(frame_f32)
-
-            if speech:
-                if not self.in_voice:
-                    # enter voice: prepend padding
-                    self.in_voice = True
-                    if self.pad_buf:
-                        pad = np.concatenate(list(self.pad_buf))
-                        self.voiced_chunks.append(pad)
-                        self.voiced_samples += len(pad)
-                    self.silence_ms = 0
-
-                self.voiced_chunks.append(frame_f32)
-                self.voiced_samples += len(frame_f32)
-                self.silence_ms = 0
-
-                # If max duration reached, force yield as non-final (prevents infinite accumulation)
-                if self.voiced_samples >= self.max_voiced_samples:
-                    chunk = np.concatenate(self.voiced_chunks) if self.voiced_chunks else np.zeros((0,), np.float32)
-                    if len(chunk) > 0:
-                        out.append((chunk, False))
-                    self.voiced_chunks = []
-                    self.voiced_samples = 0
-                    return out
-
-                # If enough voiced audio accumulated, emit non-final chunk and keep going
-                if self.voiced_samples >= self.min_voiced_samples:
-                    chunk = np.concatenate(self.voiced_chunks) if self.voiced_chunks else np.zeros((0,), np.float32)
-                    if len(chunk) > 0:
-                        out.append((chunk, False))
-                    self.voiced_chunks = []
-                    self.voiced_samples = 0
-                return out
-
-            # non-speech
-            if self.in_voice:
-                self.silence_ms += int(self.frame_sec * 1000)
-
-                # allow a little trailing padding by including a tiny bit of silence frames if you want
-                # (optional). We'll keep it simple: don't append silence frames.
-
-                if self.silence_ms >= self.min_silence_ms:
-                    # end-of-voice => flush remainder as final
-                    chunk = np.concatenate(self.voiced_chunks) if self.voiced_chunks else np.zeros((0,), np.float32)
-                    if len(chunk) > 0:
-                        out.append((chunk, True))
-                    # reset state
-                    self.in_voice = False
-                    self.silence_ms = 0
-                    self.voiced_chunks = []
-                    self.voiced_samples = 0
-
-            # discard non-voice frames entirely
-            return out
-
-    # -----------------------------
-    # 3) Model load (faster-whisper or your loader)
-    # -----------------------------
-    try:
-        model = load_whisper_model(config["model_size"], config["device"], config["compute_type"])
-    except NameError:
-        from faster_whisper import WhisperModel
-        model = WhisperModel(config["model_size"], device=config["device"], compute_type=config["compute_type"])
-
-    if not model:
-        event_q.put(("error", "Model failed to load."))
+        print(f"[{get_ts()}] Model Loaded (RNNT Mode).")
+    except Exception as e:
+        event_q.put(("error", f"Model Load Error: {e}"))
         return
 
     # -----------------------------
-    # 4) Audio source
+    # 2) Audio Source Setup (Strict 16kHz)
     # -----------------------------
-    import sounddevice as sd
     is_live_mic = isinstance(source, int)
-    wf, stream = None, None
-    sr = 16000
-    mic_queue = queue.Queue()  # For non-blocking mic capture
+    mic_queue = queue.Queue()
+    TARGET_SR = 16000
 
     def mic_callback(indata, frames, time_info, status):
-        """Background thread callback: push frames to queue immediately."""
         if status:
-            print(f"[MIC] Callback status: {status}", flush=True)
-        mic_queue.put(indata.copy())  # Must copy; indata is reused by sounddevice
+            print(f"[MIC] {status}", flush=True)
+        mic_queue.put(indata.copy())
 
     if is_live_mic:
         try:
-            # read in VAD frame sizes to align with VAC
-            frame_sec = 0.02
-            # Non-blocking: use callback to push frames to queue
-            stream = sd.InputStream(device=source, channels=1, samplerate=sr, dtype="float32",
-                                    blocksize=int(sr * frame_sec),
-                                    callback=mic_callback)
+            stream = sd.InputStream(
+                device=source,
+                channels=1,
+                samplerate=TARGET_SR,
+                dtype="float32",
+                blocksize=int(TARGET_SR * 0.04),  # 40 ms
+                callback=mic_callback,
+            )
             stream.start()
         except Exception as e:
             event_q.put(("error", f"Mic Error: {e}"))
@@ -1185,332 +812,198 @@ def transcription_stream_thread(source, config, stop_event, refine_input_q, even
     else:
         try:
             wf = wave.open(source, "rb")
-            sr = wf.getframerate()
+            file_sr = wf.getframerate()
+            if file_sr != TARGET_SR:
+                print(f"Warning: File is {file_sr}Hz. Real-time resampling not implemented here.")
         except Exception as e:
             event_q.put(("error", f"File Error: {e}"))
             return
 
     # -----------------------------
-    # 5) Filters / tuning
+    # 3) VAD & Buffers
     # -----------------------------
-    hallucinations_re = re.compile(
-        r"(Subtitle|Translated|Amara|MBC|Copyright|Rights|Reserved|Music|"
-        r"نانسي|ترجمة|اشتركوا|اشترك|الحقوق|حقوق|محفوظة|قناة|تابعونا|"
-        r"شكرا|شكراً)",
-        re.IGNORECASE,
-    )
+    try:
+        import webrtcvad
 
-    # VAC parameters (matching paper defaults closely) :contentReference[oaicite:9]{index=9}
-    VAD_FRAME_SEC = 0.02
-    MIN_NONVOICE_MS = 500
-    VOICE_PAD_MS = 100
-    MIN_VOICED_ACCUM_SEC = float(config.get("min_voiced_accum_sec", 1.0))
+        vad = webrtcvad.Vad(1)  # Mode 1 (less aggressive, better for long vowels)
+    except Exception:
+        event_q.put(("error", "webrtcvad not installed."))
+        return
 
-    # Overlap / stability knobs
-    TAIL_WORDS = int(config.get("tail_words", 180))
-    MAX_OVERLAP_K = int(config.get("max_overlap_k", 80))
-    MIN_GOOD_OVERLAP = int(config.get("min_good_overlap", 2))  # lowered from 3 to reduce word drops
+    PROCESS_CHUNK_SEC = 6.0
+    PROCESS_SAMPLES = int(TARGET_SR * PROCESS_CHUNK_SEC)
+    VAD_FRAME_MS = 30
+    VAD_FRAME_SAMPLES = int(TARGET_SR * (VAD_FRAME_MS / 1000))
 
-    # Sliding audio buffer (like SimulStreaming buffer length) :contentReference[oaicite:10]{index=10}
-    MAX_WINDOW_SEC = float(config.get("max_window_sec", 15.0))
-    AUDIO_MIN_SEC = float(config.get("audio_min_sec", 1.0))
+    OVERLAP_SEC = 0.5
+    OVERLAP_SAMPLES = int(TARGET_SR * OVERLAP_SEC)
+    prev_audio_tail = np.array([], dtype=np.float32)
 
-    audio_buf = RollingAudioBuffer(sr=sr, max_sec=MAX_WINDOW_SEC)
-    total_samples_read = 0
+    audio_buffer = []
+    silence_counter = 0
+    MAX_TRAILING_SILENCE = int(TARGET_SR * 1.0)  # hold 1s of trailing silence
+    MIN_TRANSCRIPTION_LEN = int(TARGET_SR * 3.0)  # require >= 3s of audio before flush
+    MAX_BUFFER_LEN = int(TARGET_SR * 10.0)  # hard cap to avoid runaway latency
 
-    vac = VacIterator(
-        sr=sr,
-        frame_sec=VAD_FRAME_SEC,
-        min_silence_ms=MIN_NONVOICE_MS,
-        pad_ms=VOICE_PAD_MS,
-        min_voiced_sec=MIN_VOICED_ACCUM_SEC,
-        max_voiced_sec=float(config.get("max_voiced_sec", 12.0)),
-        vad_mode=int(config.get("vad_mode", 2)),
-    )
-
-    # Global transcript and per-utterance LocalAgreement state
-    global_words = []
-    prev_candidate_words = []
-    confirmed_prefix_len = 0
-    prev_k = 0
-
-    chunk_counter = 0
-    decode_counter = 0
-    accumulated_text = ""
-    last_send_time = time.time()
-
-    # --- batching for refinement ---
-    refine_every = int(config.get("refine_every", 4))
     batch_buf = []
     batch_start_id = None
     batch_end_id = None
-    last_batch_flush = time.time()
+    chunk_counter = 0
+    refine_every = int(config.get("refine_every", 4))
 
     def flush_refine_batch(force_final: bool = False):
-        nonlocal batch_buf, batch_start_id, batch_end_id, last_batch_flush
+        nonlocal batch_buf, batch_start_id, batch_end_id
         if not batch_buf:
             return
-        batch_text = "\n\n".join(batch_buf).strip()
-        if not batch_text:
-            batch_buf = []
-            batch_start_id = None
-            batch_end_id = None
+        txt = "\n".join(batch_buf).strip()
+        if not txt:
             return
-
         job = {
-            "id": batch_end_id or batch_start_id or 0,     # keep an id for UI ordering
+            "id": batch_end_id or batch_start_id or 0,
             "range": (batch_start_id or 0, batch_end_id or batch_start_id or 0),
-            "source_ar": batch_text,
+            "source_ar": txt,
             "ts": time.time(),
             "log_file_ar": config["logs"].get("fixed_ar"),
             "log_file_en": config["logs"].get("final_en"),
             "log_file_de": config["logs"].get("final_de"),
-            "prompts": config.get("prompts"),
             "final": bool(force_final),
         }
         refine_input_q.put(job)
+        batch_buf, batch_start_id, batch_end_id = [], None, None
 
-        # reset batch
-        batch_buf = []
-        batch_start_id = None
-        batch_end_id = None
-        last_batch_flush = time.time()
+    def transcribe_segment(audio_np: np.ndarray) -> str:
+        """Save audio to temp WAV and run RNNT inference."""
+        if len(audio_np) < 800:
+            return ""
 
-    def too_repetitive(ws):
-        if len(ws) < 12:
-            return False
-        c = Counter(ws)
-        top = c.most_common(1)[0][1]
-        return top / len(ws) > 0.35
+        mx = np.max(np.abs(audio_np))
+        if mx > 0:
+            audio_np = audio_np / mx
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+            sf.write(tmp.name, audio_np, TARGET_SR)
+            try:
+                hyps = asr_model.transcribe([tmp.name], batch_size=1, return_hypotheses=False)
+            except Exception as e:
+                print(f"Transcribe Error: {e}")
+                return ""
+
+        if not hyps:
+            return ""
+
+        res = hyps[0]
+        if isinstance(res, str):
+            return res
+        if hasattr(res, "text"):
+            return res.text
+        if isinstance(res, dict) and "text" in res:
+            return res["text"]
+        return str(res)
+
+    print(f"[{get_ts()}] Stream Started (RNNT).")
 
     # -----------------------------
-    # 6) Main loop
+    # 4) Main Loop (Stabilized)
     # -----------------------------
     while not stop_event.is_set():
-        # ---- read one VAD frame
+        # --- Read ---
         if is_live_mic:
-            if not stream.active:
-                break
-            # Non-blocking: pull from queue populated by background callback
             try:
-                data = mic_queue.get(timeout=0.1)  # Wait briefly for next frame
-                frame = data.flatten().astype(np.float32)
-            except queue.Empty:
-                continue  # No frame ready, check stop_event and retry
+                frames_list = []
+                while True:
+                    try:
+                        frames_list.append(mic_queue.get_nowait())
+                    except queue.Empty:
+                        break
+                if not frames_list:
+                    time.sleep(0.01)
+                    continue
+                frame_np = np.concatenate(frames_list).flatten()
+            except Exception:
+                continue
         else:
-            raw_bytes = wf.readframes(int(sr * VAD_FRAME_SEC))
-            if not raw_bytes:
+            raw = wf.readframes(VAD_FRAME_SAMPLES)
+            if not raw:
                 break
-            frame = np.frombuffer(raw_bytes, np.int16).astype(np.float32) / 32768.0
+            frame_np = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
-        if len(frame) == 0:
-            break
-
-        t_capture_end = time.time()
-
-        # ---- VAC: possibly yields one or more voiced chunks
-        yielded = vac.push_frame(frame)
-        if not yielded:
+        if len(frame_np) == 0:
             continue
 
-        for voiced_chunk, is_final in yielded:
-            if voiced_chunk is None or len(voiced_chunk) == 0:
+        # --- VAD & Buffer ---
+        idx = 0
+        while idx < len(frame_np):
+            chunk = frame_np[idx : idx + VAD_FRAME_SAMPLES]
+            idx += VAD_FRAME_SAMPLES
+            if len(chunk) < VAD_FRAME_SAMPLES:
                 continue
 
-            # Update rolling audio buffer only with VOICE
-            audio_buf.append(voiced_chunk)
-            total_samples_read += len(voiced_chunk)
-
-            # Need minimum audio before decoding
-            if audio_buf.n_samples < int(AUDIO_MIN_SEC * sr):
-                continue
-
-            window_audio = audio_buf.get_buffer()
-
-            # ---- decode
-            t_infer_start = time.time()
-            transcribe_kwargs = dict(
-                beam_size=8, #int(config.get("beam_size", 1)),
-                language=config.get("language", "ar"),
-                condition_on_previous_text=False,
-                word_timestamps=True,   
-                no_speech_threshold=0.5,
-                log_prob_threshold=-1.0,
-                compression_ratio_threshold=2.1,
-                temperature=0.4,
-                best_of=5,
-                repetition_penalty=1.05,
-            )
-
+            int16_bytes = (chunk * 32767).astype(np.int16).tobytes()
             try:
-                segments_gen, _info = model.transcribe(window_audio, **transcribe_kwargs)
-                segments = list(segments_gen)
-            except Exception as e:
-                print(f"Whisper Error: {e}")
-                continue
+                is_speech = vad.is_speech(int16_bytes, TARGET_SR)
+            except Exception:
+                is_speech = True
 
-            t_infer_end = time.time()
-            infer_dur = t_infer_end - t_infer_start
-            lag_behind = t_infer_end - t_capture_end
-
-            # Build full hypothesis text
-            hyp_text = norm_text("".join([getattr(s, "text", "") for s in segments]))
-            m = hallucinations_re.search(hyp_text)
-            if m:
-                trigger = m.group(0)
-                hyp_text = hyp_text[:m.start()].strip()
-                print(f"[{get_ts()}] CUT HALLUCINATION TAIL on trigger: {trigger}")
-                if not hyp_text:
-                    continue
-
-            decode_counter += 1
-            if hyp_text and log_pre_lcp:
-                pre_lcp_msg = (
-                    f"[{get_ts()}] [pre{decode_counter:04d}] "
-                    f"({'FINAL' if is_final else 'PART'}) "
-                    f"(Lag: {lag_behind:.2f}s | Infer: {infer_dur:.2f}s) {hyp_text}"
-                )
-                log_to_file(pre_lcp_msg, path=log_pre_lcp)
-
-            hyp_words = split_words(hyp_text)
-
-            # Boundary safety: trim last word unless this chunk is FINAL :contentReference[oaicite:12]{index=12}
-            if not is_final:
-                hyp_words_safe = trim_last_word(hyp_words)
+            if is_speech:
+                audio_buffer.extend(chunk)
+                silence_counter = 0
             else:
-                hyp_words_safe = hyp_words
+                silence_counter += len(chunk)
+                # keep short trailing silence to bridge gaps
+                if silence_counter < MAX_TRAILING_SILENCE:
+                    audio_buffer.extend(chunk)
 
-            # Also remove hallucination tokens at word level BEFORE agreement
-            hyp_words_safe = [w for w in hyp_words_safe if not hallucinations_re.search(w)]
+        # --- Trigger ---
+        do_transcribe = False
+        buffer_len = len(audio_buffer)
 
-            # Repetition loop guard (prevents long repeated garbage like "تستطيع تستطيع ...")
-            if too_repetitive(hyp_words_safe):
-                audio_buf.clear()
-                prev_candidate_words = []
-                confirmed_prefix_len = 0
-                accumulated_text = ""
-                continue
+        # Force flush if buffer is huge
+        if buffer_len >= MAX_BUFFER_LEN:
+            do_transcribe = True
+        # Flush on silence only if we have enough speech
+        elif silence_counter > MAX_TRAILING_SILENCE and buffer_len > MIN_TRANSCRIPTION_LEN:
+            do_transcribe = True
 
-            # -----------------------------
-            # Rolling-window safe policy:
-            #   1) Align current hypothesis against already-emitted transcript (suffix-prefix overlap)
-            #   2) Apply LocalAgreement (LCP) ONLY on the remaining candidate tail across consecutive decodes
-            # -----------------------------
+        if do_transcribe:
+            t_start = time.time()
 
-            tail = global_words[-TAIL_WORDS:] if global_words else []
-            j, k = best_overlap_anywhere(
-                tail,
-                hyp_words_safe,
-                max_k=MAX_OVERLAP_K,
-                max_mismatches=int(config.get("overlap_max_mismatches", 1)),
-            )
+            current_audio = np.array(audio_buffer, dtype=np.float32)
+            if len(prev_audio_tail) > 0:
+                full_input = np.concatenate([prev_audio_tail, current_audio])
+            else:
+                full_input = current_audio
 
-            # Candidate = portion beyond overlap
-            candidate = hyp_words_safe[j + k:] if k > 0 else hyp_words_safe[:]
+            if len(current_audio) > OVERLAP_SAMPLES:
+                prev_audio_tail = current_audio[-OVERLAP_SAMPLES:]
+            else:
+                prev_audio_tail = current_audio
 
-            # small dedupe guard if window overlap was too short
-            while global_words and candidate and candidate[0] == global_words[-1]:
-                candidate = candidate[1:]
+            audio_buffer = []
 
-            # LocalAgreement on candidate across consecutive predictions
-            stable_cand = lcp_words(prev_candidate_words, candidate) if prev_candidate_words else []
+            text = transcribe_segment(full_input)
+            t_dur = time.time() - t_start
 
-            # If stability shrank, candidate alignment likely jittered; avoid dropping words
-            if confirmed_prefix_len > 0 and len(stable_cand) < confirmed_prefix_len:
-                prev_candidate_words = candidate
-                confirmed_prefix_len = 0
-                if not is_final:
-                    continue
-
-            if log_pre_lcp:
-                debug_msg = (
-                    f"[{get_ts()}] [debug{decode_counter:04d}]\n"
-                    f"  k={k} prev_k={prev_k} tail_len={len(tail)} cand_len={len(candidate)}\n"
-                    f"  stable_cand ({len(stable_cand)}): {' '.join(stable_cand[:20])}{'...' if len(stable_cand) > 20 else ''}\n"
-                    f"  confirmed_prefix_len={confirmed_prefix_len} global_words={len(global_words)}\n"
-                )
-                log_to_file(debug_msg, path=log_pre_lcp)
-
-            # Emit newly confirmed words from candidate
-            if len(stable_cand) > confirmed_prefix_len:
-                new_words = stable_cand[confirmed_prefix_len:]
-                if new_words:
-                    global_words.extend(new_words)
-                    text_chunk = join_words(new_words)
-                    accumulated_text = (accumulated_text + " " + text_chunk).strip()
-                confirmed_prefix_len = len(stable_cand)
-
-            # Calculate time since last emission for safety checks
-            time_since_last = time.time() - last_send_time
-
-            # Safety: if candidate has words but stability stalled for too long, emit what we have
-            if candidate and len(candidate) > confirmed_prefix_len and time_since_last > 5.0 and not is_final:
-                stalled_words = candidate[confirmed_prefix_len:]
-                if stalled_words:
-                    global_words.extend(stalled_words)
-                    accumulated_text = (accumulated_text + " " + join_words(stalled_words)).strip()
-                    confirmed_prefix_len = len(candidate)
-
-            # Update LA memory for next step
-            prev_candidate_words = candidate
-            prev_k = k
-
-            # If overlap is weak on FINAL, do NOT flush a large candidate (avoid re-printing the window)
-            if is_final and global_words and k < MIN_GOOD_OVERLAP:
-                prev_candidate_words = candidate
-                confirmed_prefix_len = 0
-                continue
-
-            # If FINAL: flush remaining candidate even if not yet confirmed
-            if is_final:
-                tail_words = candidate[confirmed_prefix_len:]
-                if tail_words:
-                    global_words.extend(tail_words)
-                    tail_txt = join_words(tail_words)
-                    if tail_txt:
-                        accumulated_text = (accumulated_text + " " + tail_txt).strip()
-
-                # Reset per-utterance LA state (global transcript remains)
-                prev_candidate_words = []
-                confirmed_prefix_len = 0
-                audio_buf.append(np.zeros(int(sr * 0.2), dtype=np.float32))
-
-            # ---- Emit policy
-            if accumulated_text and (len(accumulated_text) > 260 or time_since_last > 3.0 or is_final):
+            clean = text.strip() if text else ""
+            if clean:
                 chunk_counter += 1
-                clean = accumulated_text.strip()
-
-                log_msg = f"[{get_ts()}] [{chunk_counter}] (Lag: {lag_behind:.2f}s | Infer: {infer_dur:.2f}s) {clean}"
+                log_msg = f"[{get_ts()}] [{chunk_counter}] (Infer: {t_dur:.2f}s) {clean}"
                 print(log_msg)
                 log_to_file(log_msg)
 
-                # Always update RAW UI per chunk
                 event_q.put(("update", {"id": chunk_counter, "ar": clean}))
 
-                # Collect for refinement batching
                 if batch_start_id is None:
                     batch_start_id = chunk_counter
                 batch_end_id = chunk_counter
                 batch_buf.append(clean)
-
-                
                 if len(batch_buf) >= refine_every:
-                    flush_refine_batch(force_final=is_final)
+                    flush_refine_batch()
 
-                accumulated_text = ""
-                last_send_time = time.time()
-
-    # Flush remaining batch when stream ends
     flush_refine_batch(force_final=True)
-
     event_q.put(("status", "stream_finished"))
-    if wf:
-        wf.close()
-    if stream:
+    if is_live_mic and stream:
+        stream.stop()
         stream.close()
-
-
-
 
 def extraction_thread(video_path, wav_path, event_q):
     try:
@@ -1563,11 +1056,6 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        st.subheader("🗣️ Dialect / Style")
-        selected_style = st.selectbox("Select Speech Style", list(PROMPT_TEMPLATES.keys()), index=1)
-        st.info(f"Mode: **{selected_style}**")
-        st.divider()
-
         input_mode = st.radio("Source", ["Microphone", "File Upload"], index=0)
         mic_index = None
         if input_mode == "Microphone":
@@ -1637,7 +1125,6 @@ def main():
                     "refine_every": refine_every, 
                     "max_window_sec": 25.0,
                     "beam_size": 2,
-                    "prompts": PROMPT_TEMPLATES[selected_style],
                     "logs": {
                         "pre_lcp_ar": get_log_path(f"log_{st.session_state.uid}_0_pre_lcp_ar.txt"),
                         "raw_ar": get_log_path(f"log_{st.session_state.uid}_1_raw_ar.txt"),
