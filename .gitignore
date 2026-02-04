@@ -19,6 +19,7 @@ transcript_*.txt
 translation_*.txt
 
 log_*.txt
+docs/
 
 # IDE
 .vscode/
@@ -41,3 +42,7 @@ Thumbs.db
 
 # External repositories
 SimulStreaming/
+
+quran-validator/
+ijaza/
+
