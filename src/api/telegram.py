@@ -1,23 +1,8 @@
 """
-Telegram output sink for Khutbah AI.
+Telegram output sink for broadcasting transcription results.
 
 Runs as a dedicated thread, consuming messages from a queue
 and forwarding them to a Telegram chat via the Bot API.
-
-Usage from main.py:
-    from telegram_sink import telegram_sink_worker
-    t = threading.Thread(target=telegram_sink_worker, args=(my_queue,), daemon=True)
-    t.start()
-
-    # Then push messages:
-    my_queue.put({"text": "Hello from Khutbah AI"})
-
-    # Stop:
-    my_queue.put("STOP")
-
-Environment variables (read from .env or system env):
-    TELEGRAM_BOT_TOKEN  – token from @BotFather
-    TELEGRAM_CHAT_ID    – target chat / group / channel ID
 """
 
 import queue
@@ -28,8 +13,7 @@ import requests
 # Max Telegram message length
 _TG_MAX_LEN = 4096
 
-# Rate-limit guard: Telegram allows 30 msgs/sec to the same chat,
-# but bursts from a real-time pipeline can briefly exceed that.
+# Rate-limit guard
 _MIN_SEND_INTERVAL = 0.05  # 50 ms between sends
 
 
@@ -48,16 +32,15 @@ def telegram_sink_worker(
     chat_id: str = "",
 ) -> None:
     """
-    Blocking worker – run in a daemon thread.
+    Blocking worker for Telegram message sending.
 
-    Parameters
-    ----------
-    tg_q : queue.Queue
-        Items are dicts with a "text" key, or the string "STOP".
-    bot_token : str
-        Telegram bot token. If empty, the worker drains the queue silently.
-    chat_id : str
-        Target Telegram chat ID. If empty, the worker drains the queue silently.
+    Run in a daemon thread. Items in queue should be dicts with "text" key,
+    or the string "STOP" to terminate.
+
+    Args:
+        tg_q: Queue to consume messages from
+        bot_token: Telegram bot token from @BotFather
+        chat_id: Target Telegram chat/group/channel ID
     """
     if not bot_token or not chat_id:
         _log("[TG] bot_token or chat_id not set => Telegram disabled.")
