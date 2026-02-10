@@ -18,6 +18,7 @@ from ..config import DEFAULT_MT_MODEL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from ..utils import log, get_log_path, sanitize_filename
 from ..workers import refinement_worker, cloud_polish_worker, transcription_stream_thread
 from ..api import telegram_sink_worker
+from .shared_state import get_shared_state
 
 
 def get_input_devices():
@@ -38,7 +39,8 @@ def extraction_thread(video_path, wav_path, event_q):
     """Extract audio from video file using ffmpeg."""
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav_path],
+            # Cut adhan part: skip first 3 minutes of audio
+            ["ffmpeg", "-y", "-ss", "180", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True
@@ -51,6 +53,14 @@ def extraction_thread(video_path, wav_path, event_q):
 def run_app():
     """Main Streamlit application."""
     st.set_page_config(layout="wide", page_title="Khutbah AI")
+
+    # Route to TV viewer mode if requested via ?mode=tv
+    if st.query_params.get("mode") == "tv":
+        from .tv_viewer import run_tv_viewer
+        run_tv_viewer()
+        return
+
+    shared = get_shared_state()
 
     # Initialize session state
     if "uid" not in st.session_state:
@@ -129,6 +139,7 @@ def run_app():
         refine_every = st.slider("Refine Batch Size", 2, 10, 3)
         if st.button("🔴 RESET APP"):
             st.session_state.stop_event.set()
+            shared.reset()
             st.rerun()
 
     # Main content
@@ -187,6 +198,7 @@ def run_app():
             if st.button("▶️ START STREAM", type="primary", use_container_width=True):
                 st.session_state.streaming = True
                 st.session_state.stop_event.clear()
+                shared.set_streaming(True, uid=st.session_state.uid)
 
                 mt_model_safe = sanitize_filename(DEFAULT_MT_MODEL)
                 config = {
@@ -223,6 +235,7 @@ def run_app():
             if st.button("⏹️ STOP STREAM", type="secondary", use_container_width=True):
                 st.session_state.stop_event.set()
                 st.session_state.streaming = False
+                shared.set_streaming(False)
                 st.rerun()
 
     # Static display when not streaming
@@ -245,6 +258,7 @@ def run_app():
                     if t == "update":
                         st.session_state.chunks.append(p)
                         st.session_state.last_chunk_id = p.get("id", st.session_state.last_chunk_id)
+                        shared.push_chunk(p)
                         has_data = True
                         # Forward to Telegram
                         infer_info = f" (Infer: {p['infer_s']:.2f}s)" if "infer_s" in p else ""
@@ -269,6 +283,11 @@ def run_app():
                         st.session_state.refined_blocks_ar.append(f"[{p['id']}] {p['ar_fixed']}")
                         st.session_state.refined_blocks_en.append(f"[{p['id']}] {p['en_final']}")
                         st.session_state.refined_blocks_de.append(f"[{p['id']}] {p['de_final']}")
+                        shared.push_refined(
+                            f"[{p['id']}] {p['ar_fixed']}",
+                            f"[{p['id']}] {p['en_final']}",
+                            f"[{p['id']}] {p['de_final']}",
+                        )
                         has_data = True
                         # Forward to Telegram
                         _lat_info = f" (Lat: {p['lat_s']:.2f}s)" if "lat_s" in p else ""
@@ -287,9 +306,9 @@ def run_app():
             try:
                 while True:
                     p = st.session_state.cloud_out.get_nowait()
-                    st.session_state.cloud_blocks.append(
-                        f"[{p['range'][0]}–{p['range'][1]}] ({p['lang']}, {p['model']})\n{p['text']}"
-                    )
+                    cloud_text = f"[{p['range'][0]}–{p['range'][1]}] ({p['lang']}, {p['model']})\n{p['text']}"
+                    st.session_state.cloud_blocks.append(cloud_text)
+                    shared.push_cloud(cloud_text)
                     has_data = True
                     # Forward to Telegram
                     _clat = f" (Lat: {p['lat_s']:.2f}s)" if "lat_s" in p else ""

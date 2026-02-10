@@ -23,7 +23,7 @@ if os.path.exists(_ENV_PATH):
 
 
 # API Configuration
-OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://nqyt0urr1xulsb-4000.proxy.runpod.net/llm/chat")
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://tbp7nv9wcm5joa-4000.proxy.runpod.net/llm/chat")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
